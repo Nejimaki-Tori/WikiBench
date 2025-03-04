@@ -2,6 +2,7 @@ import requests
 from tqdm import tqdm
 from bs4 import BeautifulSoup
 import re
+import time
 
 class WikiParser:
     def __init__(self, article_name: str):
@@ -27,7 +28,6 @@ class WikiParser:
                 else:
                     print('Trying again!')
                     time.sleep(1)
-        self.response = requests.get(self.link, headers=self.headers, stream=True, allow_redirects=False, timeout=(3, 7))
         self.parser = BeautifulSoup(self.response.text, 'html.parser')
         self.outline = None
         self.text = ""
@@ -81,9 +81,14 @@ class WikiParser:
               elif links_sup:
                 pattern = r'\[(\d+)\]'
                 pattern2 = r'\d+'
-                number = re.search(pattern, str(links_sup)).group(0)
-                number2 = re.search(pattern2, str(number))
-                link_num[number2.group(0)] = item
+                
+                number = re.search(pattern, str(links_sup))
+                if number:
+                    number = number.group(0)
+                    number2 = re.search(pattern2, str(number))
+                    link_num[number2.group(0)] = item
+                else:
+                    continue
                   
         references_positions = {}
         for header, section_text in tqdm((self.outline).items(), desc="Calculating reference positions"):
@@ -111,6 +116,8 @@ class WikiParser:
         if content_div:
             elements = content_div.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
             for el in tqdm(elements, desc="Creating outline"):
+                if el.name == 'p' and 'ruwiki-universal-dropdown__btn-top' in el.get('class', []):
+                    continue
                 if el.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
                     if current_level is not None and current_title is not None:
                         current_title = re.sub(r'\[.*?\]', '', current_title).strip()
@@ -139,3 +146,4 @@ class WikiParser:
             text = re.sub(r'\[(\d+)\]', '', text).strip()
             article_text += key[1] + '\n' + text + '\n'
         self.text = article_text
+        return article_text
