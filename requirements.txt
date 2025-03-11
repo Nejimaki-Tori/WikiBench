@@ -6,3 +6,5 @@ newspaper3k==0.2.8
 trafilatura==0.9.0
 lxml_html_clean==0.4.1
 tqdm==4.67.1
+openai==1.55.3
+httpx==0.27.2
