@@ -64,47 +64,6 @@ class WikiParser:
     
         self.links = links_by_citations
 
-    
-    def get_reference_positions(self):
-        """Получение позиций в тексте, на которые ссылаются источники"""
-        if self.outline is None:
-            raise ValueError("Ошибка: метод get_outline() не был вызван!")
-        link_num = {}
-        texts = (self.parser).find_all("div", attrs={"class":"mw-parser-output"})
-        for item, _ in tqdm((self.links).items(), desc="Getting link numbers"):
-          for ref in texts:
-            all_link =  ref.find_all("sup")
-            for link in all_link:
-              links_sup = link.find("a")
-              if links_sup and links_sup['href'][1:] != item:
-                continue
-              elif links_sup:
-                pattern = r'\[(\d+)\]'
-                pattern2 = r'\d+'
-                
-                number = re.search(pattern, str(links_sup))
-                if number:
-                    number = number.group(0)
-                    number2 = re.search(pattern2, str(number))
-                    link_num[number2.group(0)] = item
-                else:
-                    continue
-                  
-        references_positions = {}
-        for header, section_text in tqdm((self.outline).items(), desc="Calculating reference positions"):
-            paragraphs = section_text.split("\n\n")
-            for idx, paragraph in enumerate(paragraphs):
-                paragraph = paragraph.strip()
-                if not paragraph:
-                    continue
-                matches = re.findall(r'\[(\d+)\]', paragraph)
-                for citation_num in matches:
-                    if citation_num in link_num.keys():
-                        source = link_num[citation_num]
-                        references_positions[source] = (header, idx + 1)
-
-        return references_positions
-
 
     def get_outline(self):
         '''Получение плана статьи'''
