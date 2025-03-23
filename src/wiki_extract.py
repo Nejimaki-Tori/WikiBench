@@ -5,7 +5,7 @@ from wiki_parse import WikiParser
 from tqdm import tqdm
 
 # min text length
-MIN_THRESHOLD = 4000
+MIN_THRESHOLD = 1500
 
 class Extracter(WikiParser):
     def __init__(self, article_name: str):
@@ -16,6 +16,7 @@ class Extracter(WikiParser):
         self.filtered_text = None
 
     def html_ref(self):
+        '''Сохранение html-кода страниц источников'''
         links_by_sources = {}
         
         for source_key, items in tqdm((self.links).items()):
@@ -28,7 +29,8 @@ class Extracter(WikiParser):
                         response.raise_for_status()
                         text = response.text
                         if text:
-                            extracted_links.append(text)
+                            if not extracted_links:
+                                extracted_links.append(text)
                     except requests.RequestException as e:
                         continue
             if extracted_links:
@@ -37,8 +39,9 @@ class Extracter(WikiParser):
     
     
     def newspaper_ref(self):
+        '''Сохранение текста источников с достаточным объемом текста'''
         ref_texts = {}
-        max_attempts = 2
+        max_attempts = 3
         for source_key, items in tqdm((self.links).items(), desc="Retrieving sources"):
             extracted_links = []
             for item1 in items:

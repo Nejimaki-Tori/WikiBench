@@ -2,9 +2,6 @@ from openai import OpenAI
 import os
 import json
 from tqdm.auto import tqdm
-from scipy.special import softmax
-import inspect
-
 
 SUBQUERIES_PROMPT = """
 Ты — интеллектуальный помощник, который составляет подзапросы для поиска и анализа источников и прояснения ключевых аспектов темы.
@@ -145,7 +142,7 @@ class WikiGen:
                 "use_beam_search": use_beam_search,
             }
         )
-        response = await completion
+        response = completion
         response = response.choices[0].message.content.strip()
         return response
 
@@ -172,7 +169,7 @@ class WikiGen:
                 "add_generation_prompt": True,
             }
         )
-        response = await completion
+        response = completion
         response = response.choices[0]
         ch, probs = list(
             zip(*((tok.token, tok.logprob) for tok in response.logprobs.content[0].top_logprobs))
@@ -183,9 +180,9 @@ class WikiGen:
 
     def batched_completion(self, idx, prompt, get_probs=False, **kwargs):
         if get_probs:
-            res = await self.get_probability(prompt, **kwargs)
+            res = self.get_probability(prompt, **kwargs)
         else:
-            res = await self.get_completion(prompt, **kwargs)
+            res = self.get_completion(prompt, **kwargs)
         return idx, res
 
     def submit_task_batch(self, prompts, **kwargs):
@@ -203,38 +200,7 @@ class WikiGen:
             disable=disable_tqdm,
             total=len(tasks)
         ):
-            value = await task
+            value = task
             results.append(value)
         results = sorted(results)
         return results
-
-
-
-class AsyncList:
-    def __init__(self):
-        self.contents = []
-        self.couroutine_ids = []
-
-    def append(self, item):
-        self.contents.append(item)
-        if inspect.iscoroutine(item):
-            self.couroutine_ids.append(len(self.contents) - 1)
-
-    async def complete_couroutines(self, batch_size=10):
-        while len(self.couroutine_ids) > 0:
-            tasks = [self.contents[i] for i in self.couroutine_ids[:batch_size]]
-            res = await asyncio.gather(*tasks)
-            for i, r in zip(self.couroutine_ids, res):
-                self.contents[i] = r
-            self.couroutine_ids = self.couroutine_ids[batch_size:]
-
-    def __getitem__(self, key):
-        return self.contents[key]
-
-    def __repr__(self):
-        return repr(self.contents)
-
-    async def to_list(self):
-        await self.complete_couroutines(batch_size=1)
-        return self.contents
-
