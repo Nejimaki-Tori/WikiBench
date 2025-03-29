@@ -8,3 +8,5 @@ lxml_html_clean==0.4.1
 tqdm==4.67.1
 openai==1.55.3
 httpx==0.27.2
+asyncio==3.4.3
+scipy==1.15.2
