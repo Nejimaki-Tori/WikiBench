@@ -1,10 +1,7 @@
-from openai import AsyncOpenAI
 import os
 import json
 from tqdm.auto import tqdm
-from scipy.special import softmax
-import inspect
-from openai_utils import AsyncList
+from openai_utils import AsyncList, LlmCompleter
 
 SUBQUERIES_PROMPT = """
 Ты — интеллектуальный помощник, который составляет подзапросы для поиска и анализа источников и прояснения ключевых аспектов темы.
@@ -55,7 +52,7 @@ SUBQUERIES_PROMPT = """
 """
 
 RANKING_PROMPT = """
-Ты - эксперт в написании статей Википедии и оцениываешь найденные документы: подходят ли они для написания статьи на заданную тему. Тебе нужно по данному названию статьи и тексту статьи-источника определить, является ли он релевантным для этой темы.
+Ты - эксперт в написании статей Википедии и оцениываешь найденные документы: подходят ли они для написания статьи на заданную тему. Тебе нужно по данному названию статьи и тексту статьи-источника определить, является ли он релевантным для этой темы. Текст является релевантным, если информация в нем может быть использована для составления текста статьи по данной теме.
 
 Тема:
 {}
@@ -66,99 +63,8 @@ RANKING_PROMPT = """
 """
 
 class WikiGen:
-    def __init__(self, open_ai_client, model_name='qwen2.5-72b', repetition_penalty=1.0) -> None:
-        self.client = open_ai_client
-        self.model = model_name
-        self.temperature = 0.01
-        self.top_p = 0.9
-        self.max_tokens=1000
-        self.rep_pen = repetition_penalty
-        self.extra_body={
-            "repetition_penalty": self.rep_pen,
-            "guided_choice": None,
-            "add_generation_prompt": True,
-            "guided_regex": None
-        }
-
-    def prepare_messages(self, query, system, examples, answer_prefix):
-        msgs = []
-        if system is not None:
-            msgs += [{"role": "system", "content": system}]
-        if examples is not None:
-            assert isinstance(examples, list)
-            for q, a in examples:
-                msgs += [{"role": "user", "content": q}]
-                msgs += [{"role": "assistant", "content": a}]
-        msgs += [{"role": "user", "content": query}]
-        if answer_prefix is not None:
-            msgs += [{"role": "assistant", "content": answer_prefix}]
-        return msgs
-
-    
-    async def get_completion(self, query, system=None, examples=None,
-                             choices=None, rep_penalty=1.0,
-                             regex_pattern=None, max_tokens=512,
-                             use_beam_search=False, beam_width=1,
-                             answer_prefix=None):
-        assert sum(map(lambda x: x is not None, [choices, regex_pattern])) < 2, "Only one guided mode is allowed"
-        # print(query)
-        msgs = self.prepare_messages(query, system, examples, answer_prefix)
-
-        # print(await self.client.models.list())
-
-        needs_generation_start = answer_prefix is None
-
-        if use_beam_search:
-            beam_width = max(3, beam_width)
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=msgs,
-            temperature=0.001,
-            top_p=0.9,
-            max_tokens=max_tokens,
-            n=beam_width,
-            extra_body={
-                "repetition_penalty": rep_penalty,
-                "guided_choice": choices,
-                "add_generation_prompt": needs_generation_start,
-                "continue_final_message": not needs_generation_start,
-                "guided_regex": regex_pattern,
-                "use_beam_search": use_beam_search,
-            }
-        )
-        response = await completion
-        return response
-
-    
-    async def get_probability(self, query, system=None, examples=None,
-                              choices=None, rep_penalty=1.0,
-                              regex_pattern=None, max_tokens=10):
-        assert sum(map(lambda x: x is not None, [choices, regex_pattern])) < 2, "Only one guided mode is allowed"
-        msgs = self.prepare_messages(query, system, examples, None)
-
-        completion = self.client.chat.completions.create(
-            model=self.model,
-            messages=msgs,
-            temperature=0.0,
-            top_p=1,
-            logprobs=True,
-            top_logprobs=10,
-            max_tokens=max_tokens,
-            extra_body={
-                "repetition_penalty": 1.0,
-                "guided_choice": choices,
-                "add_generation_prompt": True,
-            }
-        )
-        response = await completion
-        response = response.choices[0]
-        ch, probs = list(
-            zip(*((tok.token, tok.logprob) for tok in response.logprobs.content[0].top_logprobs))
-        )
-        probs = softmax(probs).tolist()
-        response = dict(zip(ch, probs))
-        return response
-
+    def __init__(self, client):
+        self.client = client
 
     async def get_subqueries(self, name):
         myprompt = SUBQUERIES_PROMPT
@@ -169,7 +75,6 @@ class WikiGen:
             return json_str
         else:
             print("Couldn't get the answer")
-
     
     async def process_text(self, i1: int, text: str, name: str, positive_choice: str, negative_choice: str):
         """
@@ -195,7 +100,7 @@ class WikiGen:
         for k, snippet in enumerate(windows):
             prompt = RANKING_PROMPT.format(name, snippet, positive_choice, negative_choice)
             snippet_probs.append(
-                self.get_probability(
+                self.client.get_probability(
                     prompt, 
                     rep_penalty=1.0, 
                     max_tokens=10

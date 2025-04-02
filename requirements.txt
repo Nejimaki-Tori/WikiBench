@@ -9,4 +9,3 @@ openai==1.55.3
 httpx==0.27.2
 asyncio==3.4.3
 scipy==1.15.2
-newspaper4k
