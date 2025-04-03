@@ -46,11 +46,6 @@ def ultra_stemmer(words_list):
         for word in words_list
     ]
 
-# -- Основная функция, которая:
-#    1) Считывает все файлы,
-#    2) Разбивает на сниппеты,
-#    3) Индексирует их BM25,
-#    4) Сохраняет индекс и создаёт датасет.
 def tokenize_corpus(root_dir: str):
     all_texts = load_texts_from_directory(root_dir, file_extension="*.txt")
     snippets = []
