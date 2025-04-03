@@ -3,6 +3,7 @@ import re
 from newspaper import Article, fulltext
 from wiki_parse import WikiParser
 from tqdm import tqdm
+from goose3 import Goose
 
 # min text length
 MIN_THRESHOLD = 1500
@@ -38,28 +39,43 @@ class Extracter(WikiParser):
         self.html_text = links_by_sources
     
     
-    def newspaper_ref(self):
+    def extract_ref(self):
         '''Сохранение текста источников с достаточным объемом текста'''
         ref_texts = {}
         max_attempts = 3
-        for source_key, items in tqdm((self.links).items(), desc="Retrieving sources"):
-            extracted_links = []
+
+        def fetch_text(url):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    art = Article(url, language='ru')
+                    art.download()
+                    art.parse()
+                    text = art.text
+                    if text and len(text) > MIN_THRESHOLD:
+                        return text
+                except Exception:
+                    continue
+            try:
+                g = Goose({'target_language':'ru'})
+                article = g.extract(url=url)
+                text = article.cleaned_text
+                if text and len(text) > MIN_THRESHOLD:
+                    return text
+            except Exception:
+                return None
+            return None
+            
+        for source_key, items in tqdm(self.links.items(), desc="Retrieving sources"):
+            extracted_texts = []
             for item1 in items:
-                item = item1[0]
-                if item.startswith("http"):
-                    for attempt in range(1, max_attempts + 1):
-                        try:
-                            art = Article(item, language='ru')
-                            art.download()
-                            art.parse()
-                            text = art.text
-                            if text and len(text) > MIN_THRESHOLD:
-                                extracted_links.append(text)
-                            break
-                        except:
-                            continue
-            if extracted_links:
-              ref_texts[source_key] = extracted_links
+                url = item1[0]
+                if url.startswith("http"):
+                    text = fetch_text(url)
+                    if text:
+                        extracted_texts.append(text)
+            if extracted_texts:
+                ref_texts[source_key] = extracted_texts
+                    
         self.ref_texts = ref_texts
 
 

@@ -51,6 +51,32 @@ SUBQUERIES_PROMPT = """
 }}
 """
 
+REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT = """
+Ты — интеллектуальный помощник, который составляет аннотацию для статьи.
+По названию статьи и по названиям всех параграфов верхнего уровня напиши, о чем будет вся статья в целом.
+Аннотация должна состоять из 2–5 предложений и давать представление о ключевых темах статьи.
+
+Входные данные:
+
+Название статьи: {article_title}
+
+Заголовки параграфов:
+{headers}
+
+Ответ:
+"text": ""
+"""
+
+REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT = """
+Ты — интеллектуальный помощник, который пишет, о чем будет вся статья с данным названием.
+По названию статьи распиши, используя только 5 предложений, о чем может быть вся статья.
+
+Составь ответ в поле "text" для следующего ввода:
+"article_title": "{article_title}",
+
+"text": ""
+"""
+
 RANKING_PROMPT = """
 Ты - эксперт в написании статей Википедии и оцениываешь найденные документы: подходят ли они для написания статьи на заданную тему. Тебе нужно по данному названию статьи и тексту статьи-источника определить, является ли он релевантным для этой темы. Текст является релевантным, если информация в нем может быть использована для составления текста статьи по данной теме.
 
@@ -69,10 +95,29 @@ class WikiGen:
     async def get_subqueries(self, name):
         myprompt = SUBQUERIES_PROMPT
         myprompt = myprompt.format(name=name)
-        res = await self.get_completion(myprompt)
+        res = await self.client.get_completion(myprompt)
         if res.choices is not None:
             json_str = res.choices[0].message.content.strip()
             return json_str
+        else:
+            print("Couldn't get the answer")
+
+    async def get_ref_subqueries(self, page):
+        '''
+        Функция для получения эталонного плана статьи по данным заголовкам
+        '''
+        if not page.outline:
+            print('Empty page!')
+            return
+        myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT
+        headers = [header[1] for header in page.outline.keys() if header[0] == 'h2']
+        headers_formatted = "\n".join(f"- {h}" for h in headers)
+        myprompt = myprompt.format(article_title=page.name, headers=headers_formatted)
+        res = await self.client.get_completion(myprompt)
+        
+        if res.choices is not None:
+            response = res.choices[0].message.content.strip()
+            return (page.name, response)
         else:
             print("Couldn't get the answer")
     

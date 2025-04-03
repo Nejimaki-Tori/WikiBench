@@ -93,7 +93,11 @@ class WikiParser:
             if current_level is not None and current_title is not None:
                 current_title = re.sub(r'\[.*?\]', '', current_title).strip()
                 outline[(current_level, current_title)] =  "\n\n".join(current_text_list).strip()
-        
+                
+        items = list(outline.items())
+        while items and items[-1][1] == '':
+            items.pop()
+        outline = dict(items)
         self.outline = outline
 
         
