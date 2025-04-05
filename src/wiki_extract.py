@@ -1,9 +1,13 @@
+# -*- coding: utf-8 -*-
+
 import requests
 import re
 from newspaper import Article, fulltext
 from wiki_parse import WikiParser
 from tqdm import tqdm
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from goose3 import Goose
+import os
 
 # min text length
 MIN_THRESHOLD = 1500
@@ -15,6 +19,56 @@ class Extracter(WikiParser):
         self.ref_texts = None
         self.filtered_outline = None
         self.filtered_text = None
+
+    def fetch_article_text(self, urls: [str]) -> str:
+        """
+        Загружает и парсит статью по URL с использованием newspaper3k
+        """
+        for url in urls:
+            try:
+                new_url = url[0]
+                article = Article(new_url, language='ru')
+                article.download()
+                article.parse()
+                text = article.text
+                if not text:
+                    continue
+                return text
+            except:
+                return ""
+        return ""
+    
+    
+    def save_text_to_file(self, text: str, filename: str, article_name: str) -> None:
+        article_name = re.sub(r'[<>:"/\\|?*]', '', article_name)
+        directory = os.path.join("Articles", "Sources", article_name)
+        os.makedirs(directory, exist_ok=True)
+        filepath = os.path.join(directory, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(text)
+    
+    
+    def fast_extracter(self) -> None:
+        '''
+        Быстрое скачивание источников с использованием ThreadPoolExecutor
+        '''
+        max_workers = min(20, len(self.links.keys()))
+        successful_urls = {}
+    
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_url = {executor.submit(self.fetch_article_text, url): (ref_key, url) for ref_key, url in self.links.items()}
+    
+            for idx, future in tqdm(enumerate(as_completed(future_to_url)), total=len(self.links), desc="Retrieving sources"):
+                ref_key, _ = future_to_url[future]
+                try:
+                    text = future.result()
+                    if len(text) > MIN_THRESHOLD:
+                        filename = "source_" + str(idx) + ".txt"
+                        self.save_text_to_file(text, filename, self.name)
+                        successful_urls[ref_key] = [text]
+                except:
+                    pass
+        self.ref_texts = successful_urls
 
     def html_ref(self):
         '''Сохранение html-кода страниц источников'''
@@ -42,19 +96,17 @@ class Extracter(WikiParser):
     def extract_ref(self):
         '''Сохранение текста источников с достаточным объемом текста'''
         ref_texts = {}
-        max_attempts = 3
 
         def fetch_text(url):
-            for attempt in range(1, max_attempts + 1):
-                try:
-                    art = Article(url, language='ru')
-                    art.download()
-                    art.parse()
-                    text = art.text
-                    if text and len(text) > MIN_THRESHOLD:
-                        return text
-                except Exception:
-                    continue
+            try:
+                art = Article(url, language='ru')
+                art.download()
+                art.parse()
+                text = art.text
+                if text and len(text) > MIN_THRESHOLD:
+                    return text
+            except Exception:
+                pass
             try:
                 g = Goose({'target_language':'ru'})
                 article = g.extract(url=url)
@@ -64,7 +116,7 @@ class Extracter(WikiParser):
             except Exception:
                 return None
             return None
-            
+
         for source_key, items in tqdm(self.links.items(), desc="Retrieving sources"):
             extracted_texts = []
             for item1 in items:
