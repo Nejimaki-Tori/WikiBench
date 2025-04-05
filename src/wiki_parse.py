@@ -1,3 +1,5 @@
+# -*- coding: utf-8 -*-
+
 import requests
 from tqdm import tqdm
 from bs4 import BeautifulSoup
@@ -6,7 +8,6 @@ import time
 
 class WikiParser:
     def __init__(self, article_name: str):
-        """Инициализация парсера с загрузкой HTML-кода."""
         self.name = article_name
         self.headers = {"User-Agent": "Mozilla/5.0 (X11; CrOS x86_64 12871.102.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.141 Safari/537.36"}
         self.link = ('https://ru.ruwiki.ru/wiki/' + self.name).replace(" ", "_")
@@ -32,39 +33,41 @@ class WikiParser:
         self.outline = None
         self.text = ""
         self.links = None
-
+        
         
     def get_references(self):
         """Выкачка ссылок источников"""
         references = (self.parser).find_all("div", attrs={"class":"mw-references-wrap"})
+        if not references:
+            references = (self.parser).find_all("div", attrs={"class":"mw-page-container-inner-box"})
         links_by_citations = {}
         
         for reference_section in references:
-          all_ref =  reference_section.find_all("li")
-          for r in all_ref:
-            ref_content = []
-            ref_id = r.get('id')
-            external_links = r.find_all("a", attrs={"class": "external text"})
-            if external_links:
-              ref_content.extend([(link.get('href'), link.get_text(strip=True)) for link in external_links])
-            else:
-              reference_text = r.find("span", class_="reference-text")
-              if reference_text:
-                internal_link = reference_text.find("a", href=True)
-                if not internal_link:
-                  ref_content.append((reference_text.get_text(strip=True)))
+            all_ref =  reference_section.find_all("li")
+        
+            for r in all_ref:
+                ref_content = []
+                ref_id = r.get('id')
+                external_links = r.find_all("a", attrs={"class": "external text"})
+                if external_links:
+                    ref_content.extend([(link.get('href'), link.get_text(strip=True)) for link in external_links])
                 else:
-                   for ul in (self.parser).find_all("ul"):
-                      for li in ul.find_all("li"):
-                        literature = li.find("span", {"class": "citation no-wikidata", "id": internal_link['href'][1:]})
-                        if literature:
-                          ref_content.append((literature.get_text(strip=True)))
-            if ref_content:
-              links_by_citations[ref_id] = ref_content
-    
+                    reference_text = r.find("span", class_="reference-text")
+                    if reference_text:
+                        internal_link = reference_text.find("a", href=True)
+                        if not internal_link:
+                            ref_content.append((reference_text.get_text(strip=True)))
+                        else:
+                            for ul in (self.parser).find_all("ul"):
+                                for li in ul.find_all("li"):
+                                    literature = li.find("span", {"class": "citation no-wikidata", "id": internal_link['href'][1:]})
+                                    if literature:
+                                        ref_content.append((literature.get_text(strip=True)))
+                if ref_content:
+                    links_by_citations[ref_id] = ref_content
         self.links = links_by_citations
-
-
+        
+    
     def get_outline(self):
         '''Получение плана статьи'''
         outline = {}
@@ -74,6 +77,12 @@ class WikiParser:
         content_div = (self.parser).find('div', {'class': 'mw-parser-output'})
         if content_div:
             elements = content_div.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+            if not elements:
+                content_div = (self.parser).find('div', {'class': 'mw-page-container-inner-box'})
+                elements = content_div.find_all(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+                if not elements:
+                    print("Error! Wrong page format!")
+                    return
             for el in tqdm(elements, desc="Creating outline"):
                 if el.name == 'p' and 'ruwiki-universal-dropdown__btn-top' in el.get('class', []):
                     continue
@@ -99,7 +108,7 @@ class WikiParser:
             items.pop()
         outline = dict(items)
         self.outline = outline
-
+        
         
     def get_text(self):
         '''Получение очищенного текста статьи'''
