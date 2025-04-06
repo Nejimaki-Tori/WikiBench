@@ -9,6 +9,7 @@ import time
 class WikiParser:
     def __init__(self, article_name: str):
         self.name = article_name
+        self.cleared_name = re.sub(r'[<>:"/\\|?*]', '', article_name)
         self.headers = {"User-Agent": "Mozilla/5.0 (X11; CrOS x86_64 12871.102.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.141 Safari/537.36"}
         self.link = ('https://ru.ruwiki.ru/wiki/' + self.name).replace(" ", "_")
         max_attempts = 5

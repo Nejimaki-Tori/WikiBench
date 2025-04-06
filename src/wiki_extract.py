@@ -2,41 +2,63 @@
 
 import requests
 import re
+import json
 from newspaper import Article, fulltext
+from goose3 import Goose
 from wiki_parse import WikiParser
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from goose3 import Goose
 import os
 
 # min text length
 MIN_THRESHOLD = 1500
 
 class Extracter(WikiParser):
-    def __init__(self, article_name: str):
+    def __init__(self, article_name: str, downloaded: bool=False):
         super().__init__(article_name)
-        self.html_text = None
-        self.ref_texts = None
         self.filtered_outline = None
         self.filtered_text = None
+        save_dir = os.path.join("Articles", "Downloaded_Sources_List")
+        os.makedirs(save_dir, exist_ok=True)
+        self.file_path = os.path.join(save_dir, f"{self.cleared_name.replace(" ", "_")}.json")
+        if downloaded:
+            with open(self.file_path, "r", encoding="utf-8") as f:
+                self.downloaded_links = json.load(f)
+        else:
+            self.downloaded_links = None
+        self.html_text = None
+        self.ref_texts = None
 
     def fetch_article_text(self, urls: [str]) -> str:
         """
         Загружает и парсит статью по URL с использованием newspaper3k
         """
         for url in urls:
+            new_url = url[0]
+            text = None
             try:
-                new_url = url[0]
+                # попытка скачать источник на русском языке
                 article = Article(new_url, language='ru')
                 article.download()
                 article.parse()
                 text = article.text
                 if not text:
-                    continue
+                    # попытка скачать источник на английском
+                    article = Article(new_url, language='en')
+                    article.download()
+                    article.parse()
+                    text = article.text
+                    if not text:
+                        # попытка скачать источник другим модулем
+                        g = Goose({'target_language':'ru'})
+                        article = g.extract(url=url)
+                        text = article.cleaned_text
+                        if not text:
+                            continue
                 return text
             except:
-                return ""
-        return ""
+                return None
+        return None
     
     
     def save_text_to_file(self, text: str, filename: str, article_name: str) -> None:
@@ -53,22 +75,118 @@ class Extracter(WikiParser):
         Быстрое скачивание источников с использованием ThreadPoolExecutor
         '''
         max_workers = min(20, len(self.links.keys()))
-        successful_urls = {}
+        successful_urls = []
     
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_url = {executor.submit(self.fetch_article_text, url): (ref_key, url) for ref_key, url in self.links.items()}
-    
-            for idx, future in tqdm(enumerate(as_completed(future_to_url)), total=len(self.links), desc="Retrieving sources"):
+
+            idx = 0
+            for future in tqdm(as_completed(future_to_url), total=len(self.links), desc="Retrieving sources"):
                 ref_key, _ = future_to_url[future]
                 try:
                     text = future.result()
-                    if len(text) > MIN_THRESHOLD:
+                    if text and len(text) > MIN_THRESHOLD:
+                        idx += 1
                         filename = "source_" + str(idx) + ".txt"
                         self.save_text_to_file(text, filename, self.name)
-                        successful_urls[ref_key] = [text]
+                        successful_urls.append(ref_key)
                 except:
                     pass
-        self.ref_texts = successful_urls
+        
+        with open(self.file_path, "w", encoding="utf-8") as f:
+            json.dump(successful_urls, f, ensure_ascii=False, indent=2)
+
+        self.downloaded_links = successful_urls
+
+    def get_reference_positions(self):
+        """Получение позиций в тексте, на которые ссылаются источники"""
+        if self.outline is None:
+            raise ValueError("Ошибка: метод get_outline() не был вызван!")
+        link_num = {}
+        texts = (self.parser).find_all("div", attrs={"class":"mw-parser-output"})
+        for item, _ in tqdm((self.links).items(), desc="Getting link numbers"):
+          for ref in texts:
+            all_link =  ref.find_all("sup")
+            for link in all_link:
+              links_sup = link.find("a")
+              if links_sup and links_sup['href'][1:] != item:
+                continue
+              elif links_sup:
+                pattern = r'\[(\d+)\]'
+                pattern2 = r'\d+'
+                number = re.search(pattern, str(links_sup))
+                if number:
+                    number = number.group(0)
+                    number2 = re.search(pattern2, str(number))
+                    link_num[number2.group(0)] = item
+                else:
+                    continue
+                  
+        references_positions = {}
+        for header, section_text in tqdm((self.outline).items(), desc="Calculating reference positions"):
+            paragraphs = section_text.split("\n\n")
+            for idx, paragraph in enumerate(paragraphs):
+                paragraph = paragraph.strip()
+                if not paragraph:
+                    continue
+                matches = re.findall(r'\[(\d+)\]', paragraph)
+                for citation_num in matches:
+                    if citation_num in link_num.keys():
+                        source = link_num[citation_num]
+                        references_positions[source] = (header, idx + 1)
+
+        return references_positions
+
+    def invert_dict(self, d):
+        inverted = {}
+        for key, value in d.items():
+            if value not in inverted:
+                inverted[value] = [key]
+            else:
+                inverted[value].append(key)
+        return inverted
+
+    def get_filtered_outline(self):
+        '''Удаление текста, не опирающегося на источники'''
+        if self.outline is None:
+            raise ValueError("Ошибка: метод get_outline() не был вызван!")
+
+        if self.ref_texts is None and self.downloaded_links is None:
+            raise ValueError("Ошибка: источники к статье не были скачаны!")
+        
+        ref_pos = self.get_reference_positions()
+        inverted_ref = self.invert_dict(ref_pos)
+        filtered_outline = {}
+        
+        for header, section_text in self.outline.items():
+            if not section_text:
+                filtered_outline[header] = ''
+                continue
+            new_text = ""
+            paragraphs = section_text.split("\n\n")
+            for idx, paragraph in enumerate(paragraphs):
+                if (header, idx + 1) in inverted_ref.keys():
+                    for source in inverted_ref[(header, idx + 1)]:
+                        if (self.ref_texts and source in self.ref_texts and self.ref_texts[source]) or \
+                        (self.downloaded_links and source in self.downloaded_links):
+                            new_text += paragraph + "\n\n"
+                            break
+                else:
+                     new_text += paragraph + "\n\n"
+            if new_text:
+                filtered_outline[header] = new_text
+
+        self.filtered_outline = filtered_outline
+
+    def get_filtered_text(self):
+        '''Получение отфильтрованного текста статьи'''
+        article_filtered_text = ""
+        for key, value in (self.filtered_outline).items():
+            text = re.sub(r'\s+\[(\d+)\]', '', value).strip()
+            text = re.sub(r'\[(\d+)\]', '', text).strip()
+            article_filtered_text += key[1] + '\n' + text + '\n'
+        self.filtered_text = article_filtered_text
+        return article_filtered_text
 
     def html_ref(self):
         '''Сохранение html-кода страниц источников'''
@@ -91,8 +209,8 @@ class Extracter(WikiParser):
             if extracted_links:
                 links_by_sources[source_key] = extracted_links
         self.html_text = links_by_sources
-    
-    
+
+    # старый способ загрузки источников
     def extract_ref(self):
         '''Сохранение текста источников с достаточным объемом текста'''
         ref_texts = {}
@@ -129,97 +247,4 @@ class Extracter(WikiParser):
                 ref_texts[source_key] = extracted_texts
                     
         self.ref_texts = ref_texts
-
-
-    def invert_dict(self, d):
-        inverted = {}
-        for key, value in d.items():
-            if value not in inverted:
-                inverted[value] = [key]
-            else:
-                inverted[value].append(key)
-        return inverted
-    
-
-    def get_reference_positions(self):
-        """Получение позиций в тексте, на которые ссылаются источники"""
-        if self.outline is None:
-            raise ValueError("Ошибка: метод get_outline() не был вызван!")
-        link_num = {}
-        texts = (self.parser).find_all("div", attrs={"class":"mw-parser-output"})
-        for item, _ in tqdm((self.links).items(), desc="Getting link numbers"):
-          for ref in texts:
-            all_link =  ref.find_all("sup")
-            for link in all_link:
-              links_sup = link.find("a")
-              if links_sup and links_sup['href'][1:] != item:
-                continue
-              elif links_sup:
-                pattern = r'\[(\d+)\]'
-                pattern2 = r'\d+'
-                
-                number = re.search(pattern, str(links_sup))
-                if number:
-                    number = number.group(0)
-                    number2 = re.search(pattern2, str(number))
-                    link_num[number2.group(0)] = item
-                else:
-                    continue
-                  
-        references_positions = {}
-        for header, section_text in tqdm((self.outline).items(), desc="Calculating reference positions"):
-            paragraphs = section_text.split("\n\n")
-            for idx, paragraph in enumerate(paragraphs):
-                paragraph = paragraph.strip()
-                if not paragraph:
-                    continue
-                matches = re.findall(r'\[(\d+)\]', paragraph)
-                for citation_num in matches:
-                    if citation_num in link_num.keys():
-                        source = link_num[citation_num]
-                        references_positions[source] = (header, idx + 1)
-
-        return references_positions
-
-    
-    def get_filtered_outline(self):
-        '''Удаление текста, не опирающегося на источники'''
-        if self.outline is None:
-            raise ValueError("Ошибка: метод get_outline() не был вызван!")
-
-        if self.ref_texts is None:
-            raise ValueError("Ошибка: метод newspaper_ref() не был вызван!")
-        
-        ref_pos = self.get_reference_positions()
-        inverted_ref = self.invert_dict(ref_pos)
-        filtered_outline = {}
-        
-        for header, section_text in self.outline.items():
-            if not section_text:
-                filtered_outline[header] = ''
-                continue
-            new_text = ""
-            paragraphs = section_text.split("\n\n")
-            for idx, paragraph in enumerate(paragraphs):
-                if (header, idx + 1) in inverted_ref.keys():
-                    for source in inverted_ref[(header, idx + 1)]:
-                        if source in self.ref_texts and self.ref_texts[source]:
-                            new_text += paragraph + "\n\n"
-                            break
-                else:
-                     new_text += paragraph + "\n\n"
-            if new_text:
-                filtered_outline[header] = new_text
-
-        self.filtered_outline = filtered_outline
-
-    def get_filtered_text(self):
-        '''Получение отфильтрованного текста статьи'''
-        article_filtered_text = ""
-        for key, value in (self.filtered_outline).items():
-            text = re.sub(r'\s+\[(\d+)\]', '', value).strip()
-            text = re.sub(r'\[(\d+)\]', '', text).strip()
-            article_filtered_text += key[1] + '\n' + text + '\n'
-        self.filtered_text = article_filtered_text
-        return article_filtered_text
         
