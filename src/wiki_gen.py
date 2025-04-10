@@ -1,55 +1,10 @@
+# -*- coding: utf-8 -*-
+
 import os
 import json
+import random
 from tqdm.auto import tqdm
 from openai_utils import AsyncList, LlmCompleter
-
-SUBQUERIES_PROMPT = """
-Ты — интеллектуальный помощник, который составляет подзапросы для поиска и анализа источников и прояснения ключевых аспектов темы.
-Исходя из заданного названия статьи, тебе нужно:
-
-1. Сформулировать 5–7 подзапросов, которые помогут найти релевантные источники.
-2. Каждый подзапрос должен быть четко связан с основным заголовком и охватывать различные аспекты темы, помогая глубже ее раскрыть.
-3. Подзапросы должны быть точными, конкретными и подходящими для поиска информации.
-4. Подзапросы должны быть разнообразными: рассматривай исторические, научные, технические, социальные, экономические и другие аспекты темы, если это применимо.
-5. Избегай повторений в вопросах — каждый подзапрос должен раскрывать новый аспект темы.
-6. Ответ должен быть строго в формате JSON.
-
-
-Пример ответа:
-{{
-  "article_title": "Черная смерть",
-  "subqueries": [
-    "Каковы основные причины возникновения пандемии чумы в средневековье?",
-    "Когда произошла вспышка чумы?",
-    "Какие пути распространения чумы способствовали ее быстрому охвату Европы?",
-    "Как реагировали государства и общество на пандемию чумы?",
-    "Какие методы лечения чумы использовались в Средневековье?",
-    "Какие изменения в медицине и санитарии произошли после эпидемии?",
-    "Есть ли современные вспышки чумы, и как она лечится сегодня?"
-  ]
-}}
-
-Другой пример ответа:
-{{
-  "article_title": "Ядерная катастрофа в Чернобыле",
-  "subqueries": [
-    "Каковы основные причины аварии на Чернобыльской АЭС?",
-    "Как происходила ликвидация последствий катастрофы?",
-    "Как радиация повлияла на здоровье людей и окружающую среду?",
-    "Какие меры были приняты для предотвращения подобных аварий в будущем?",
-    "Какое влияние катастрофа оказала на развитие атомной энергетики?",
-  ]
-}}
-
-
-Теперь составь аналогичный JSON-ответ для следующего названия статьи:
-{{
-  "article_title": "{name}",
-  "subqueries": [
-    
-  ]
-}}
-"""
 
 REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT = """
 Ты — интеллектуальный помощник, который составляет аннотацию для статьи.
@@ -67,6 +22,23 @@ REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT = """
 "text": ""
 """
 
+REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT_ENG = """
+You are an intelligent assistant tasked with writing a summary for an article.
+Given the article's title and the titles of all top-level sections (which may be in Russian), write a short overview of what the article is generally about.
+The summary should consist of 2–5 sentences and provide an understanding of the article’s main topics.
+Your response must be written in English.
+
+Input:
+
+Article title: {article_title}
+
+Section titles:
+{headers}
+
+Output:
+"text": ""
+"""
+
 REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT = """
 Ты — интеллектуальный помощник, который пишет, о чем будет вся статья с данным названием.
 По названию статьи распиши, используя только 5 предложений, о чем может быть вся статья.
@@ -78,38 +50,75 @@ REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT = """
 """
 
 RANKING_PROMPT = """
-Ты - эксперт в написании статей Википедии и оцениываешь найденные документы: подходят ли они для написания статьи на заданную тему. Тебе нужно по данному названию статьи и тексту статьи-источника определить, является ли он релевантным для этой темы. Текст является релевантным, если информация в нем может быть использована для составления текста статьи по данной теме.
+Ты - эксперт в написании статей Википедии и оцениваешь найденные документы: подходят ли они для написания статьи на заданную тему. Тебе нужно по данному названию статьи и тексту статьи-источника определить, является ли он релевантным для этой темы. Текст является релевантным, если информация в нем может быть использована для составления текста статьи по данной теме.
 
 Тема:
 {}
 Текст:
 {}
 
-Соответствует ли запрос теме? Начни свой ответ с {} или {}.
+Соответствует ли запрос теме? Начни свой ответ с {}, если соответствует или c {}, если не соответствует.
+"""
+
+CLUSTER_DESCRIPTION_PROMPT = """
+Ты - эксперт в написании статей Википедии и занимаешься составлением планов секций. На основе темы статьи и данных тебе текстов-источников ты должен придумать название раздела и составить его план без конкретных деталей. Ты работаешь над созданием плана только для одного раздела!
+Вот формат в котором нужно все описать:
+1. Используй "# Title" для заголовка раздела, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее.
+2. Ничего другого писать не нужно.
+3. Старайся ограничиться небольшим числом заголовков (2-5 штук).
+4. Создай план только для одной секции.
+
+Тема статьи: {}
+
+Текст из источника:
+{}
+"""
+
+COMBINE_CLUSTER_PROMPT = """
+Ты - эксперт в написании статей Википедии и занимаешься составлением планов секций. У тебя уже есть несколько черновых вариантов планов, подготовленных экспертами для одной секции и тема статьи, в которой будет эта секция. Объедини эти планы в общий короткий план, который раскроет основные темы этой секции.
+Вот формат в котором нужно все описать:
+1. Используй "# Title" для заголовка раздела, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее.
+2. Ничего другого писать не нужно.
+3. Старайся ограничиться небольшим числом заголовков (2-5 штук).
+4. Создай план только для одной секции.
+
+Тема статьи: {}
+
+Планы секций:
+{}
+"""
+
+
+COMBINE_OUTLINE_PROMPT = """Тебе нужно написать короткий план для страницы Википедия.
+У тебя уже есть несколько планов секций из этой статьи, подготовленных экспертами по теме статьи.
+Объедини эти планы в общий короткий план, который раскроет основные темы статьи.
+Вот формат в котором нужно все описать:
+1. Начни план с названия интересующей темы "Topic"
+2. Используй "# Title" для заголовков разделов, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее.
+3. В конце плана напиши **END**
+4. Ничего другого писать не нужно.
+
+Тема статьи: {}
+
+Планы секций:
+{}
 """
 
 class WikiGen:
     def __init__(self, client):
         self.client = client
 
-    async def get_subqueries(self, name):
-        myprompt = SUBQUERIES_PROMPT
-        myprompt = myprompt.format(name=name)
-        res = await self.client.get_completion(myprompt)
-        if res.choices is not None:
-            json_str = res.choices[0].message.content.strip()
-            return json_str
-        else:
-            print("Couldn't get the answer")
-
-    async def get_ref_subqueries(self, page):
+    async def get_ref_subqueries(self, page, mode=0):
         '''
         Функция для получения эталонного плана статьи по данным заголовкам
         '''
         if not page.outline:
             print('Empty page!')
             return
-        myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT
+        if mode == 0:
+            myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT
+        else:
+            myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT_ENG
         headers = [header[1] for header in page.outline.keys() if header[0] == 'h2']
         headers_formatted = "\n".join(f"- {h}" for h in headers)
         myprompt = myprompt.format(article_title=page.name, headers=headers_formatted)
@@ -120,7 +129,34 @@ class WikiGen:
             return (page.name, response)
         else:
             print("Couldn't get the answer")
-    
+
+    async def get_cluster_description(self, name, cluster_text):
+        myprompt = CLUSTER_DESCRIPTION_PROMPT.format(name, cluster_text)
+        res = await self.client.get_completion(myprompt)
+        if res.choices is not None:
+            response = res.choices[0].message.content.strip()
+            return response
+        else:
+            print("Couldn't get the answer")
+
+    async def combine_cluster(self, name, clusters_description):
+        myprompt = COMBINE_CLUSTER_PROMPT.format(name, clusters_description)
+        res = await self.client.get_completion(myprompt)
+        if res.choices is not None:
+            response = res.choices[0].message.content.strip()
+            return response
+        else:
+            print("Couldn't get the answer")
+
+    async def combine_outline(self, name, outlines):
+        myprompt = COMBINE_OUTLINE_PROMPT.format(name, outlines)
+        res = await self.client.get_completion(myprompt)
+        if res.choices is not None:
+            response = res.choices[0].message.content.strip()
+            return response
+        else:
+            print("Couldn't get the answer")
+            
     async def process_text(self, i1: int, text: str, name: str, positive_choice: str, negative_choice: str):
         """
         Функция обрабатывает ОДИН текст:
@@ -178,7 +214,7 @@ class WikiGen:
     
         return (i1, combined_prob)
         
-    async def filter_sources(self, name, subqueries, texts):
+    async def filter_sources(self, name, texts):
         """
         Функция проходится по всем текстам и возвращает список вероятностей:
         - Возвращает [(индекс, вероятность)]
@@ -189,18 +225,33 @@ class WikiGen:
         negative_choice = 'NO'
         
         for i1, text in enumerate(texts):
-                probs.append(
-                    self.process_text(
-                        i1, 
-                        text, 
-                        name, 
-                        positive_choice, 
-                        negative_choice
-                    )
+            probs.append(
+                self.process_text(
+                    i1, 
+                    text, 
+                    name, 
+                    positive_choice, 
+                    negative_choice
                 )
+            )
 
-        await probs.complete_couroutines(batch_size=20)
+        await probs.complete_couroutines(batch_size=40)
         final_probs = await probs.to_list()
         final_probs = sorted(final_probs)
         return final_probs
 
+    async def generate_outline(self, clusters, name):
+        cluster_outlines = []
+        for label, sample_snippets in clusters.items():
+            cluster_descriptions = AsyncList()
+            for sn in sample_snippets:
+                cluster_descriptions.append(self.get_cluster_description(name, sn))
+            await cluster_descriptions.complete_couroutines(batch_size=3)
+            cluster_descriptions = await cluster_descriptions.to_list()
+            draft_cluster_outline = "\n\n".join(f"- {desc}" for desc in cluster_descriptions)
+            cluster_outline = await self.combine_cluster(name, draft_cluster_outline)
+            cluster_outlines.append(cluster_outline)
+            print(cluster_outline)
+        mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
+        outline = await self.combine_outline('Python', mega_outline)
+        return outline
