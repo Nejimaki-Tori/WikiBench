@@ -14,10 +14,11 @@ import os
 MIN_THRESHOLD = 1500
 
 class Extracter(WikiParser):
-    def __init__(self, article_name: str, downloaded: bool=False):
+    def __init__(self, article_name: str, downloaded: bool=False, verbose=True):
         super().__init__(article_name)
         self.filtered_outline = None
         self.filtered_text = None
+        self.verbose = verbose
         save_dir = os.path.join("Articles", "Downloaded_Sources_List")
         os.makedirs(save_dir, exist_ok=True)
         self.file_path = os.path.join(save_dir, f"{self.cleared_name.replace(" ", "_")}.json")
@@ -26,6 +27,7 @@ class Extracter(WikiParser):
                 self.downloaded_links = json.load(f)
         else:
             self.downloaded_links = None
+        self.references_positions = None
         self.html_text = None
         self.ref_texts = None
 
@@ -81,7 +83,7 @@ class Extracter(WikiParser):
             future_to_url = {executor.submit(self.fetch_article_text, url): (ref_key, url) for ref_key, url in self.links.items()}
 
             idx = 0
-            for future in tqdm(as_completed(future_to_url), total=len(self.links), desc="Retrieving sources"):
+            for future in tqdm(as_completed(future_to_url), total=len(self.links), desc="Retrieving sources", disable=not self.verbose):
                 ref_key, _ = future_to_url[future]
                 try:
                     text = future.result()
@@ -104,7 +106,7 @@ class Extracter(WikiParser):
             raise ValueError("Ошибка: метод get_outline() не был вызван!")
         link_num = {}
         texts = (self.parser).find_all("div", attrs={"class":"mw-parser-output"})
-        for item, _ in tqdm((self.links).items(), desc="Getting link numbers"):
+        for item, _ in tqdm((self.links).items(), desc="Getting link numbers", disable=not self.verbose):
           for ref in texts:
             all_link =  ref.find_all("sup")
             for link in all_link:
@@ -123,7 +125,7 @@ class Extracter(WikiParser):
                     continue
                   
         references_positions = {}
-        for header, section_text in tqdm((self.outline).items(), desc="Calculating reference positions"):
+        for header, section_text in tqdm((self.outline).items(), desc="Calculating reference positions", disable=not self.verbose):
             paragraphs = section_text.split("\n\n")
             for idx, paragraph in enumerate(paragraphs):
                 paragraph = paragraph.strip()
@@ -135,6 +137,7 @@ class Extracter(WikiParser):
                         source = link_num[citation_num]
                         references_positions[source] = (header, idx + 1)
 
+        self.references_positions = references_positions
         return references_positions
 
     def invert_dict(self, d):
@@ -171,9 +174,7 @@ class Extracter(WikiParser):
                         (self.downloaded_links and source in self.downloaded_links):
                             new_text += paragraph + "\n\n"
                             break
-                else:
-                     new_text += paragraph + "\n\n"
-            if new_text:
+            if new_text or header[0] == 'h2':
                 filtered_outline[header] = new_text
 
         self.filtered_outline = filtered_outline
@@ -192,7 +193,7 @@ class Extracter(WikiParser):
         '''Сохранение html-кода страниц источников'''
         links_by_sources = {}
         
-        for source_key, items in tqdm((self.links).items()):
+        for source_key, items in tqdm((self.links).items(), disable=not self.verbose):
             extracted_links = []
             for item1 in items:
                 item = item1[0]

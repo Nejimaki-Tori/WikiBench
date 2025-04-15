@@ -15,107 +15,12 @@ import bm25s
 import Stemmer
 import re
 import pickle
+from wiki_utils import WikiUtils
 
-class WikiEval:
+class WikiEval(WikiUtils):
     def __init__(self, client, pre_load=False):
+        super().__init__(pre_load=pre_load)
         self.client = client
-        self.model_embeddings = SentenceTransformer("sergeyzh/BERTA")
-        self.root_dir = r"Articles\Sources"
-        self.bm_dir = r'Generation\Utils\bm25_index'
-        self.dataset_dir = r'Generation\Utils\text_corpus\snippets.pkl'
-        self.embeddings_dir = 'Generation/Utils/embeddings/'
-        ru_stopwords = stopwords.words("russian")
-        en_stopwords = stopwords.words("english")
-        self.combined_stopwords = set(ru_stopwords + en_stopwords)
-        self.russian_stemmer = Stemmer.Stemmer("russian")
-        self.english_stemmer = Stemmer.Stemmer("english")
-        self.pre_load = pre_load
-        if pre_load:
-            self.retriever = bm25s.BM25.load(self.bm_dir, load_corpus=False)
-            self.snippets = self.get_texts_from_disk()
-        else:
-            self.snippets = self.load_corpus()
-
-    def load_corpus(self, save_bm=None, save_data=None):
-        if not save_bm:
-            save_bm = self.bm_dir
-        if not save_data:
-            save_data = self.dataset_dir
-        corpus_tokens, snippets = self.tokenize_corpus(save_dataset=save_data)
-        self.retriever = bm25s.BM25()
-        self.retriever.index(corpus_tokens)
-        self.retriever.save(save_bm, corpus=corpus_tokens)
-        return snippets
-
-    def get_texts_from_disk(self, directory=None):
-        if not directory:
-            directory = self.dataset_dir
-        with open(self.dataset_dir, "rb") as f:
-            return pickle.load(f)
-
-    def load_texts_from_directory(self, file_extension="*.txt"):
-        """
-        Рекурсивно собираем все файлы с указанным расширением из root_dir.
-        Возвращает список (article_path, text_content).
-        """
-        texts = []
-        pattern = os.path.join(self.root_dir, "**", file_extension)
-        for filepath in glob.iglob(pattern, recursive=True):
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-                texts.append((filepath, content))
-        return texts
-
-    def chunk_text(self, text: str, window_size=2000, overlap=512):
-        words = text.split()
-        snippets = []
-        i = 0
-        while i < len(words):
-            snippet = " ".join(words[i : i + window_size])
-            snippets.append(snippet)
-            if i + window_size >= len(words):
-                break
-            i += window_size - overlap
-        return snippets
-
-    def is_cyrillic(self, word):
-        return any(c.lower() not in "abcdefghijklmnopqrstuvwxyz" for c in word)
-    
-    def ultra_stemmer(self, words_list):
-        return [
-            self.russian_stemmer.stemWord(word) if self.is_cyrillic(word) else self.english_stemmer.stemWord(word)
-            for word in words_list
-        ]
-
-    def tokenize_corpus(self, window_size=300, overlap=0, save_dataset=None):
-        '''
-        Токенезация корпуса текстов из коллекции скачанных источников
-        '''
-        if not save_dataset:
-            save_dataset = self.dataset_dir
-        all_texts = self.load_texts_from_directory(file_extension="*.txt")
-        snippets = {}
-        for file_path, content in all_texts:
-            file_snippets = self.chunk_text(content, window_size=window_size, overlap=overlap)
-            for idx, snippet in enumerate(file_snippets):
-                article_name = file_path.split("\\")[-2]
-                text_num = int(file_path.split("\\")[-1].split('.')[0].split('_')[1])
-                snippets[(article_name, text_num, idx)] = snippet
-        
-        corpus_texts = [text for text in snippets.values()]
-        corpus_tokens = bm25s.tokenize(
-            corpus_texts, 
-            stopwords=self.combined_stopwords, 
-            stemmer=self.ultra_stemmer
-        )
-
-        with open(self.dataset_dir, "wb") as f:
-            pickle.dump(snippets, f)
-        
-        return corpus_tokens, snippets
-
-    def tokenize_query(self, query: str):
-        return bm25s.tokenize(query, stopwords=self.combined_stopwords, stemmer=self.ultra_stemmer)
     
     def dcg(self, relevances, k):
         return sum(rel / math.log2(i+2) for i, rel in enumerate(relevances[:k]))
@@ -162,43 +67,130 @@ class WikiEval:
         for s in same_snippets:
             if s[0] >= start_idx and s[0] <= end_idx:
                 text.append(s[1])
+        #print('found texts: ', len(text))
         combined_snippet = " ".join(txt for txt in text)
         return combined_snippet
 
-    async def rank_outline(self, name, true_heads, neighbor_count=0):
-        name = re.sub(r'[<>:"/\\|?*]', '', name)
-        snippets_filtered = [sn[1] for sn in self.snippets.items() if sn[0][0] == name]
-        snippets_id = [sn[0] for sn in self.snippets.items() if sn[0][0] == name]
-        if self.pre_load:
-            path = self.embeddings_dir + name + '.pkl'
-            with open(path, "rb") as f:
-                embeddings = pickle.load(f)
-        else:
-            os.makedirs(self.embeddings_dir, exist_ok=True)
-            embeddings = self.model_embeddings.encode(snippets_filtered)
-            file_path = os.path.join(save_dir, f"{name}.pkl")
-            with open(file_path, "wb") as f:
-                pickle.dump(embeddings, f)
+    async def k_means_method(self, name, snippets_filtered, snippets_id, embeddings, neighbor_count, forced_cluster_num, clusters_centers, description_mode=0):
         silhouette_avg = []
-        for num_clusters in list(range(2,20)):
-            kmeans = KMeans(n_clusters=num_clusters, init="k-means++", n_init = 10)
-            kmeans.fit_predict(embeddings)
-            score = silhouette_score(embeddings, kmeans.labels_)
-            silhouette_avg.append(score)
-        kluster_num = np.argmax(silhouette_avg)+2
-        kmeans = KMeans(n_clusters=kluster_num)
+        snippet_emb = {}
+        for i, sn_id in enumerate(snippets_id):
+            snippet_emb[sn_id] = embeddings[i]
+        if forced_cluster_num:
+            kluster_num = forced_cluster_num
+        elif not clusters_centers:
+            for num_clusters in list(range(2,20)):
+                kmeans = KMeans(n_clusters=num_clusters, random_state=42)
+                kmeans.fit_predict(embeddings)
+                score = silhouette_score(embeddings, kmeans.labels_)
+                silhouette_avg.append(score)
+            kluster_num = np.argmax(silhouette_avg)+2
+        if clusters_centers:
+            #print('clust with mega hint')
+            kmeans = KMeans(n_clusters=len(clusters_centers), init=clusters_centers, random_state=42)
+        else:
+            #print('no hint for you!')
+            kmeans = KMeans(n_clusters=kluster_num, random_state=42)
         kmeans.fit(embeddings)
         labels = kmeans.labels_
         clusters = {}
         for label, snippet_id in zip(labels, snippets_id):
-            clusters.setdefault(label, []).append(snippet_id)
+            clusters.setdefault(label, []).append((snippet_id, snippet_emb[snippet_id]))
         collected_snippets = {}
-        for label, snippet_id in clusters.items():
-            chosen_snippets = [random.sample(snippet_id, min(3, len(snippet_id))) for _ in range(3)]
-            sample_snippets = ["\n".join([self.append_neighbors(chosen_snippet_id, neighbor_count) for chosen_snippet_id in chosen_snippet]) for chosen_snippet in chosen_snippets]
-            collected_snippets.setdefault(label, sample_snippets)
-        outline = await self.client.generate_outline(collected_snippets, name)
-        print(outline)
+        for label, snippet_id_and_emb in clusters.items():
+            cluster_emb = np.array([elem[1] for elem in snippet_id_and_emb])
+            if len(cluster_emb) <= 5:
+                chosen_snippets = [sn_id[0] for sn_id in snippet_id_and_emb]
+            else:
+                cluster_center = cluster_emb.mean()
+                distances = [(np.linalg.norm(emb[1] - cluster_center), emb[0]) for emb in snippet_id_and_emb]
+                distances = sorted(distances)[:5]
+                chosen_snippets = [sn_id[1] for sn_id in distances]
+            #chosen_snippets = [random.sample(snippet_id, min(3, len(snippet_id))) for _ in range(3)]
+            #sample_snippets = ["\n".join([self.append_neighbors(chosen_snippet_id, neighbor_count) for chosen_snippet_id in chosen_snippet]) for chosen_snippet in chosen_snippets]
+            #collected_snippets.setdefault(label, sample_snippets)
+            sample_snippet = "\n\n".join([self.append_neighbors(chosen_snippet_id, neighbor_count) for chosen_snippet_id in chosen_snippets])
+            collected_snippets.setdefault(label, sample_snippet)
+        #print('parsed for clusters: ', len(collected_snippets))
+        outline = await self.client.generate_outline(collected_snippets, name, description_mode)
+        return outline
+
+    def get_header_embeddings(self, doc_embeddings, doc_available, source_positions):
+        """
+        doc_embeddings: dict {номер_документа: embedding}
+        doc_available: dict {id_ссылки: номер_документа}
+        source_positions: dict {id_ссылки: ((header_level, header_text), paragraph_number)}
+    
+        Возвращает словарь вида {(header_level, header_text): embedding, ...} для заголовков h2, 
+        где embedding – эмбеддинг первого доступного документа в группе, 
+        охватывающей данный h2 и все подразделы до следующего h2.
+        """
+        header_to_embedding = {}
+        current_header = None       
+        current_links = []        
+        
+        for link_id, ((level, header_text), para_num) in source_positions.items():
+            if int(level[1]) == 2 or int(level[1]) == 1:
+                if current_header is not None and current_links:
+                    emb = None
+                    for lid in current_links:
+                        if lid in doc_available:
+                            doc_num = doc_available[lid]
+                            if doc_num in doc_embeddings:
+                                emb = doc_embeddings[doc_num]
+                                break
+                    if emb is not None:
+                        header_key = (current_header[0], current_header[1])
+                        if current_header not in header_to_embedding:
+                            #print('Emb for head: ', current_header)
+                            header_to_embedding[header_key] = emb
+
+                current_header = (level, header_text)
+                current_links = [link_id]
+            else:
+                if current_header is not None:
+                    current_links.append(link_id)
+
+        if current_header is not None and current_links:
+            emb = None
+            for lid in current_links:
+                if lid in doc_available:
+                    doc_num = doc_available[lid]
+                    if doc_num in doc_embeddings:
+                        emb = doc_embeddings[doc_num]
+                        break
+            if emb is not None:
+                header_key = (current_header[0], current_header[1])
+                header_to_embedding[header_key] = emb
+        return header_to_embedding
+
+    async def rank_outline(self, name, neighbor_count=0, forced_cluster_num=0, mode=0, page=None, description_mode=0):
+        '''
+        Оценка генерации плана статьи через кластеризацию источников
+        '''
+        name = re.sub(r'[<>:"/\\|?*]', '', name)
+        snippets_filtered = [sn[1] for sn in self.snippets.items() if sn[0][0] == name]
+        #print('found snippets: ', len(snippets_filtered))
+        snippets_id = [sn[0] for sn in self.snippets.items() if sn[0][0] == name]
+        embeddings = self.get_embeddings(name)
+        #print('emb len: ', len(embeddings))
+        clusters_centers = None
+        if mode:
+            id_to_embedding = {}
+            for i, snippet_id in enumerate(snippets_id):
+                if snippet_id[1] not in id_to_embedding:
+                    id_to_embedding[snippet_id[1]] = embeddings[i]
+            #print('Count of emb ids: ', len(id_to_embedding))
+            doc_num = {
+                ref_link: doc_id for doc_id, ref_link in enumerate(page.downloaded_links)
+            }
+            #print('Downloaded docs: ', doc_num)
+            header_to_embedding = self.get_header_embeddings(id_to_embedding, doc_num, page.references_positions)
+            clusters_centers = list(header_to_embedding.values())
+            #print(len(header_to_embedding))
+            #print(list(header_to_embedding.keys())[0], ' ', len(list(header_to_embedding.values())[0]))
+        outline = await self.k_means_method(name, snippets_filtered, snippets_id, embeddings, neighbor_count, forced_cluster_num, clusters_centers, description_mode)
+        #print(outline)
         parsed_headings = []
         for line in outline.split('\n'):
             line = line.strip()
@@ -208,14 +200,22 @@ class WikiEval:
                 if title:
                     parsed_headings.append((level, title))
         heads = [head[1] for head in parsed_headings]
-        pred_emb = model.encode(heads, normalize_embeddings=True)
-        ref_emb =  model.encode(true_heads, normalize_embeddings=True)
+        pred_emb = self.model_embeddings.encode(heads, normalize_embeddings=True)
+        true_heads = []
+        for headings in page.filtered_outline.keys():
+            true_heads.append(headings[1])
+        ref_emb =  self.model_embeddings.encode(true_heads, normalize_embeddings=True)
         sims = pred_emb @ ref_emb.T
         precision_scores = sims.max(axis=1).mean()
         recall_scores = sims.max(axis=0).mean()
-        if precision + recall == 0:
+        if precision_scores + recall_scores == 0:
             f1 = 0.0
         else:
-            f1 = 2 * precision * recall / (precision + recall)
+            f1 = 2 * precision_scores * recall_scores / (precision_scores + recall_scores)
         
         return precision_scores, recall_scores, f1
+
+    async def rank_section(self, page):
+        section_to_sn = self.section_to_snippets(page)
+        ranked_section = AsyncList()
+        for section, snip in section_to_sn:

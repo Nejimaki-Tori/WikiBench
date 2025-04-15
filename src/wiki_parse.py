@@ -7,7 +7,7 @@ import re
 import time
 
 class WikiParser:
-    def __init__(self, article_name: str):
+    def __init__(self, article_name: str, verbose=True):
         self.name = article_name
         self.cleared_name = re.sub(r'[<>:"/\\|?*]', '', article_name)
         self.headers = {"User-Agent": "Mozilla/5.0 (X11; CrOS x86_64 12871.102.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.141 Safari/537.36"}
@@ -30,6 +30,7 @@ class WikiParser:
                 else:
                     print('Trying again!')
                     time.sleep(1)
+        self.verbose = verbose
         self.parser = BeautifulSoup(self.response.text, 'html.parser')
         self.outline = None
         self.text = ""
@@ -84,7 +85,7 @@ class WikiParser:
                 if not elements:
                     print("Error! Wrong page format!")
                     return
-            for el in tqdm(elements, desc="Creating outline"):
+            for el in tqdm(elements, desc="Creating outline", disable=not self.verbose):
                 if el.name == 'p' and 'ruwiki-universal-dropdown__btn-top' in el.get('class', []):
                     continue
                 if el.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:

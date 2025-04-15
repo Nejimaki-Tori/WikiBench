@@ -60,17 +60,50 @@ RANKING_PROMPT = """
 Соответствует ли запрос теме? Начни свой ответ с {}, если соответствует или c {}, если не соответствует.
 """
 
+CLUSTER_OUTLINE_PROMPT = """
+Ты — эксперт по написанию статей Википедии. На основе темы статьи и предложенных источников составь план ОДНОЙ секции, которая логически объединяет представленные материалы.
+
+Твоя задача:
+1. Придумай подходящее название для этой секции, отражающее суть текстов.
+2. Построй структуру раздела с помощью заголовков: 
+   - "#" — для заголовка секции, 
+   - "##" — для подразделов, 
+   - "###" — для подподразделов, и так далее.
+3. Не используй никаких описаний, пояснений или комментариев — только заголовки.
+4. Используй от 2 до 5 заголовков в общей структуре.
+5. Не выходи за рамки ОДНОГО раздела.
+
+Тема статьи:  
+{}
+
+Источник(и):  
+{}
+"""
+
+
 CLUSTER_DESCRIPTION_PROMPT = """
-Ты - эксперт в написании статей Википедии и занимаешься составлением планов секций. На основе темы статьи и данных тебе текстов-источников ты должен придумать название раздела и составить его план без конкретных деталей. Ты работаешь над созданием плана только для одного раздела!
-Вот формат в котором нужно все описать:
-1. Используй "# Title" для заголовка раздела, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее.
-2. Ничего другого писать не нужно.
-3. Старайся ограничиться небольшим числом заголовков (2-5 штук).
-4. Создай план только для одной секции.
+Ты — эксперт по написанию статей для Википедии. Твоя задача — на основе предложенного текста составить краткое аннотированное описание, которое отражает его суть.
+Пожалуйста, следуй следующим инструкциям:
+1. Извлеки только ключевые факты и основные идеи, содержащиеся именно в этом источнике. Не используй внешние знания.
+2. Сформулируй краткое описание в 2–5 предложениях, соблюдая нейтральный и энциклопедический стиль.
+3. Не добавляй заголовков, пояснений, вводных или заключительных фраз. Просто выведи краткое содержание.
+Это описание в дальнейшем будет использоваться для составления плана раздела статьи на Википедии, поэтому оно должно быть ёмким и информативным.
 
 Тема статьи: {}
+Источник:
+{}
+"""
 
-Текст из источника:
+OUTLINE_FROM_DESCRIPTION = """
+Ты — опытный редактор Википедии. На основе данной тебе темы статьи и приведённого ниже краткого описания составь план одной секции статьи.
+Пожалуйста, строго следуй этим инструкциям:
+1. Используй "# Title" для заголовка раздела, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее.
+2. Не пиши ничего, кроме структуры из заголовков. Не добавляй пояснений, описаний или текста.
+3. Ограничь структуру 2–5 заголовками (всех уровней суммарно).
+Составь план только для одной секции статьи, на основе смысловых блоков в описании.
+
+Тема статьи: {}
+Краткое описание:
 {}
 """
 
@@ -130,11 +163,24 @@ class WikiGen:
         else:
             print("Couldn't get the answer")
 
-    async def get_cluster_description(self, name, cluster_text):
-        myprompt = CLUSTER_DESCRIPTION_PROMPT.format(name, cluster_text)
+    async def get_cluster_description(self, name, cluster_text, description_mode=0, cluster_level_refine=False):
+        if description_mode:
+            myprompt = CLUSTER_DESCRIPTION_PROMPT.format(name, cluster_text)
+        else:
+            myprompt = CLUSTER_OUTLINE_PROMPT.format(name, cluster_text)
         res = await self.client.get_completion(myprompt)
         if res.choices is not None:
             response = res.choices[0].message.content.strip()
+            if description_mode:
+                myprompt = OUTLINE_FROM_DESCRIPTION.format(name, response)
+                res = await self.client.get_completion(myprompt)
+                if res.choices is not None:
+                    response = res.choices[0].message.content.strip()
+                    if cluster_level_refine:
+                        myprompt = COMBINE_CLUSTER_PROMPT.format(name, response)
+                        res = await self.client.get_completion(myprompt)
+                    if res.choices is not None:
+                        response = res.choices[0].message.content.strip()
             return response
         else:
             print("Couldn't get the answer")
@@ -239,19 +285,36 @@ class WikiGen:
         final_probs = await probs.to_list()
         final_probs = sorted(final_probs)
         return final_probs
-
-    async def generate_outline(self, clusters, name):
-        cluster_outlines = []
-        for label, sample_snippets in clusters.items():
-            cluster_descriptions = AsyncList()
-            for sn in sample_snippets:
-                cluster_descriptions.append(self.get_cluster_description(name, sn))
-            await cluster_descriptions.complete_couroutines(batch_size=3)
-            cluster_descriptions = await cluster_descriptions.to_list()
-            draft_cluster_outline = "\n\n".join(f"- {desc}" for desc in cluster_descriptions)
-            cluster_outline = await self.combine_cluster(name, draft_cluster_outline)
-            cluster_outlines.append(cluster_outline)
-            print(cluster_outline)
+    
+    async def generate_outline(self, clusters, name, description_mode=0):
+        cluster_outlines = AsyncList()
+        for label, sample_snippet in clusters.items():
+            cluster_outlines.append(self.get_cluster_description(name, sample_snippet, description_mode))
+        await cluster_outlines.complete_couroutines(batch_size=20)
+        cluster_outlines = await cluster_outlines.to_list()
         mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
-        outline = await self.combine_outline('Python', mega_outline)
+        outline = await self.combine_outline(name, mega_outline)
         return outline
+
+        
+    '''
+    async def get_one_cluster(self, name, sample_snippets, description_mode=0):
+        cluster_descriptions = AsyncList()
+        for sn in sample_snippets:
+            cluster_descriptions.append(self.get_cluster_description(name, sn, description_mode))
+        await cluster_descriptions.complete_couroutines(batch_size=3)
+        cluster_descriptions = await cluster_descriptions.to_list()
+        draft_cluster_outline = "\n\n".join(f"- {desc}" for desc in cluster_descriptions)
+        cluster_outline = await self.combine_cluster(name, draft_cluster_outline)
+        return cluster_outline
+    
+    async def generate_outline(self, clusters, name):
+        cluster_outlines = AsyncList()
+        for label, sample_snippets in clusters.items():
+            cluster_outlines.append(self.get_one_cluster(name, sample_snippets))
+        await cluster_outlines.complete_couroutines(batch_size=20)
+        cluster_outlines = await cluster_outlines.to_list()
+        mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
+        outline = await self.combine_outline(name, mega_outline)
+        return outline
+    '''
