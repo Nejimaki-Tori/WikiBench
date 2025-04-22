@@ -30,6 +30,7 @@ class Extracter(WikiParser):
         self.references_positions = None
         self.html_text = None
         self.ref_texts = None
+        self.links_num = None
 
     def fetch_article_text(self, urls: [str]) -> str:
         """
@@ -135,18 +136,22 @@ class Extracter(WikiParser):
                 for citation_num in matches:
                     if citation_num in link_num.keys():
                         source = link_num[citation_num]
-                        references_positions[source] = (header, idx + 1)
-
+                        if source not in references_positions:
+                            references_positions[source] = [(header, idx + 1)]
+                        else:
+                            references_positions[source].append((header, idx + 1))
+        self.links_num = link_num
         self.references_positions = references_positions
         return references_positions
 
     def invert_dict(self, d):
         inverted = {}
         for key, value in d.items():
-            if value not in inverted:
-                inverted[value] = [key]
-            else:
-                inverted[value].append(key)
+            for val in value:
+                if val not in inverted:
+                    inverted[val] = [key]
+                else:
+                    inverted[val].append(key)
         return inverted
 
     def get_filtered_outline(self):
@@ -172,6 +177,7 @@ class Extracter(WikiParser):
                     for source in inverted_ref[(header, idx + 1)]:
                         if (self.ref_texts and source in self.ref_texts and self.ref_texts[source]) or \
                         (self.downloaded_links and source in self.downloaded_links):
+                            paragraph = re.sub(r'\[(\d+)\]', '', paragraph).strip()
                             new_text += paragraph + "\n\n"
                             break
             if new_text or header[0] == 'h2':
