@@ -52,7 +52,7 @@ class WikiEval(WikiUtils):
         snippets_list = list(self.snippets.items())
         chosen_snippets = [results[0, i] for i in range(results.shape[1])]
         source_texts = [snippets_list[idx][1] for idx in chosen_snippets]
-        source_names = [snippets_list[idx][0][0] for idx in chosen_snippets] # другой вид сохранения сниппетов!
+        source_names = [snippets_list[idx][0][0] for idx in chosen_snippets] # другой вид сохранения сниппетов! вроде поправил
         probs = await self.client.filter_sources(true_name, source_texts)
         ranking = [(prob[1], name) for name, prob in zip(source_names, probs)]
         ranking = sorted(ranking, reverse=True)
@@ -120,6 +120,13 @@ class WikiEval(WikiUtils):
         #print(len(collected_snippets[0]))
         #print(collected_snippets[0])
         #return
+        '''
+        for a, b in collected_snippets.items():
+            print(a)
+            print(len(b))
+            print()
+        return
+        '''
         outline = await self.client.generate_outline(collected_snippets, name, description_mode)
         return outline
 
@@ -197,7 +204,7 @@ class WikiEval(WikiUtils):
             #print('Downloaded docs: ', doc_num)
             header_to_embedding = self.get_header_embeddings(id_to_embedding, doc_num, page.references_positions)
             clusters_centers = list(header_to_embedding.values())
-            #print(len(header_to_embedding))
+            #print('Found hints: ', len(header_to_embedding))
             #return
             #print(list(header_to_embedding.keys())[0], ' ', len(list(header_to_embedding.values())[0]))
         outline = await self.k_means_method(name, snippets_filtered, snippets_id, embeddings, neighbor_count, forced_cluster_num, clusters_centers, description_mode)
@@ -238,48 +245,28 @@ class WikiEval(WikiUtils):
         ranked = sorted(zip(snips, cosine_scores), key=lambda x: x[1], reverse=True)
         
         new_ranked = [(sn, cos, emb) for sn, cos, emb in zip(snips, cosine_scores, emb_snips) if cos >= 0.5]
-        #print('filtered!: ', len(new_ranked))
         filtered_final = sorted(new_ranked, key=lambda x: (x[0][0][1], x[0][0][2]))
-        #debug_id = [(x[0][0][1], x[0][0][2]) for x in filtered_final]
         selected_emb = np.array([elem[2] for elem in filtered_final])
         texts_final = [elem[0][1] for elem in filtered_final]
         if len(texts_final) <= 1:
             return [texts_final] if len(texts_final) == 1 else None
         sim_matrix = selected_emb @ selected_emb.T
         mask = sim_matrix >= 0.8
-        #print('emb shape: ',selected_emb.shape)
-        #print('wrong!   ', section)
-        #print('wrong emb ', len(selected_emb))
-        #print(mask)
         np.fill_diagonal(mask, 0)
         graph = csr_matrix(mask)
         n_components, labels = connected_components(csgraph=graph, directed=False, return_labels=True)
-        #print('was snips: ', len(snips))
-        #print('cosine snips: ', len(texts_final))
-        #print('labels! ', labels)
         groups = {}
         for idx, label in enumerate(labels):
             groups.setdefault(label, []).append(texts_final[idx])
-
-        #print('found groups: ', len(groups))
-        #print('first group: ', len(groups[0]))
-        #print(debug_id)
         return list(groups.values())
 
     async def get_section(self, section, snips, page):
-        #print('what? ', section)
         filtered_snippets = self.filter_snippets(section, snips, page)
-        #print(filtered_snippets[0])
-        #return
         if not filtered_snippets:
             return -1
         summarized_snippets = await self.client.summarize_groups(filtered_snippets)
-        #print(len(filtered_snippets))
-        #print(filtered_snippets[0])
         if not summarized_snippets:
             return -1
-        #print('SUKS        ', len(summarized_snippets))
-        #print(summarized_snippets[0])
         i = 0
         batched_snippets = []
         while i < len(summarized_snippets):
@@ -289,31 +276,27 @@ class WikiEval(WikiUtils):
         print('Generated for section: ', section)
         return generated_text
 
-    async def rank_sections(self, page):
+    async def rank_sections(self, page, model_name="Tmp"):
         section_to_sn = self.section_to_snippets(page)
-        #print('aaaaaaaaaaaaaa ')
-        #print(section_to_sn[('h3', 'Молекулярное моделирование')])
         sections = AsyncList()
         secs = []
         for section, snips_id in section_to_sn.items():
-            #print('for section: ', section)
-            #print('collected snips: ', len(snips_id))
-            #print()
-            #print(section)
             sections.append(self.get_section(section, snips_id, page))
             secs.append(section)
         await sections.complete_couroutines(batch_size=4)
         sections = await sections.to_list()
         result = {}
-        print()
-        print()
-        print()
         for sn, txt in zip(secs, sections):
-            #print(txt)
-            #print(sn)
             result[sn] = txt
         model_embeddings = SentenceTransformer("sergeyzh/BERTA")
-        with open(page.cleared_name + '.txt', 'w', encoding='utf-8') as file:
+        pr_scores = []
+        rec_scores = []
+        f1_scores = []
+        model_name = re.sub(r'[<>:"/\\|?*]', '', model_name)
+        dir_name = os.path.join("Gen_articles", model_name)
+        os.makedirs(dir_name, exist_ok=True)
+        path = os.path.join(dir_name, page.cleared_name + '.txt')
+        with open(path, 'w', encoding='utf-8') as file:
             for section in page.filtered_outline.keys():
                 if ((section not in result) or result[section] == -1) and section[0] == 'h2':
                     print(section, file=file)
@@ -330,10 +313,13 @@ class WikiEval(WikiUtils):
                 sims = pred_emb @ ref_emb.T
                 precision_scores = sims.max(axis=1).mean()
                 recall_scores = sims.max(axis=0).mean()
+                pr_scores.append(precision_scores)
+                rec_scores.append(recall_scores)
                 if precision_scores + recall_scores == 0:
                     f1 = 0.0
                 else:
                     f1 = 2 * precision_scores * recall_scores / (precision_scores + recall_scores)
+                f1_scores.append(f1)
                 print(section, file=file)
                 print(f"BERTScore Precision: {precision_scores:.4f}", file=file)
                 print(f"BERTScore Recall:    {recall_scores:.4f}", file=file)
@@ -342,6 +328,7 @@ class WikiEval(WikiUtils):
                 print(result[section], file=file)
                 print(file=file)
                 print(file=file)
+        return pr_scores, rec_scores, f1_scores
 
 
 '''

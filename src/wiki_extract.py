@@ -175,8 +175,10 @@ class Extracter(WikiParser):
             for idx, paragraph in enumerate(paragraphs):
                 if (header, idx + 1) in inverted_ref.keys():
                     for source in inverted_ref[(header, idx + 1)]:
+                        #print(source)
                         if (self.ref_texts and source in self.ref_texts and self.ref_texts[source]) or \
                         (self.downloaded_links and source in self.downloaded_links):
+                            #print('Take!: ', source)
                             paragraph = re.sub(r'\[(\d+)\]', '', paragraph).strip()
                             new_text += paragraph + "\n\n"
                             break

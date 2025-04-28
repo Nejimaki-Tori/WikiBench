@@ -5,6 +5,7 @@ from wiki_gen import WikiGen
 from openai_utils import LlmCompleter, AsyncList
 from wiki_metrics import WikiEval
 from wiki_utils import WikiUtils
+from tqdm import tqdm
 
 article_names = [
     'Python',
@@ -46,8 +47,13 @@ class WikiBench:
         self.env_prepared = pre_load
         self.wiki_writer = WikiGen(self.client)
         self.article_names = article_names
+        self.model_name = model_name
         self.wiki_utility = WikiUtils(False) if not self.env_prepared else None
         self.wiki_evaluater = WikiEval(self.wiki_writer, True) if self.env_prepared else None
+        self.query_logger = []
+        self.outline_logger = []
+        self.article_gen_logger = []
+        self.retry_attempts = 5
 
     def get_article(self, name, retrieve_sources=False, is_downloaded=False, verbose=False):
         if verbose:
@@ -114,7 +120,8 @@ class WikiBench:
         for folder in folders:
             snip = [1 if snippet[0] == folder else 0 for snippet in snippets.keys()]
             topR.append((folder, sum(snip)))
-        
+            
+        self.query_logger = []
         ndcg_s = 0
         pr_r_s = 0
         count = 0
@@ -122,20 +129,37 @@ class WikiBench:
             print(name)
             count += 1
             ndcg, pr_r_score = await self.wiki_evaluater.rank_one_query(annotation, 3*topK, name)
+            print(ndcg)
+            print(pr_r_score)
+            print()
+            self.query_logger.append((ndcg, pr_r_score))
             ndcg_s += ndcg
             pr_r_s += pr_r_score
         return ndcg_s / count, pr_r_s / count
 
-    async def rank_outline(self):
+    async def rank_outline(self, neighbor_count=0, description_mode=0, mode=1):
         p_s = 0
         r_s = 0
         f_s = 0
         count = 0
-        for name in article_names:
+        self.outline_logger = []
+        for name in self.article_names:
+            print(name)
             count += 1
-            page = get_article(name, is_downloaded=True)
-            p, r, f = await wiki_evaluater.rank_outline(name, mode=1, page=page, neighbor_count=1, description_mode=1)
+            page = self.get_article(name, is_downloaded=True)
+            p, r, f = await self.wiki_evaluater.rank_outline(name, mode=mode, page=page, neighbor_count=neighbor_count, description_mode=description_mode)
+            print('Pr: ', p, ' rec: ', r, ' f: ', f)
+            print()
+            self.outline_logger.append((p, r, f))
             p_s += p
             r_s += r
             f_s += f
         return p_s / count, r_s / count, f_s / count
+
+    async def rank_sections(self):
+        self.article_gen_logger = []
+        for name in self.article_names:
+            print(name)
+            page = self.get_article(name, False, True)
+            pr, rec, f1 = await self.wiki_evaluater.rank_sections(page, self.model_name)
+            self.article_gen_logger.append((pr, rec, f1))

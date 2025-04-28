@@ -259,19 +259,23 @@ class WikiGen:
             myprompt = CLUSTER_DESCRIPTION_PROMPT.format(name, cluster_text)
         else:
             myprompt = CLUSTER_OUTLINE_PROMPT.format(name, cluster_text)
+        #print('check prompt  ', len(myprompt))
         res = await self.client.get_completion(myprompt)
         if res.choices is not None:
             response = res.choices[0].message.content.strip()
             if description_mode:
                 myprompt = OUTLINE_FROM_DESCRIPTION.format(name, response)
+                #print('check prompt 2   ', len(myprompt))
                 res = await self.client.get_completion(myprompt)
                 if res.choices is not None:
                     response = res.choices[0].message.content.strip()
                     if cluster_level_refine:
+                        #print('erm?')
                         myprompt = COMBINE_CLUSTER_PROMPT.format(name, response)
                         res = await self.client.get_completion(myprompt)
                     if res.choices is not None:
                         response = res.choices[0].message.content.strip()
+            #print('wha?   ', len(response))
             return response
         else:
             print("Couldn't get the answer")
@@ -384,6 +388,7 @@ class WikiGen:
         await cluster_outlines.complete_couroutines(batch_size=20)
         cluster_outlines = await cluster_outlines.to_list()
         mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
+        #print(len(mega_outline))
         outline = await self.combine_outline(name, mega_outline)
         return outline
 

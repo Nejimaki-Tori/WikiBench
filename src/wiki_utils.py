@@ -32,8 +32,6 @@ class WikiUtils:
         if pre_load:
             self.retriever = bm25s.BM25.load(self.bm_dir, load_corpus=False)
             self.snippets = self.get_texts_from_disk()
-        else:
-            self.snippets = self.load_corpus()
             
     def load_corpus(self, save_bm=None, save_data=None):
         if not save_bm:
