@@ -95,7 +95,7 @@ import sys
 sys.path.append("src")
 from wiki_bench import WikiBench
 
-bench = WikiBench(
+wiki_bench = WikiBench(
     api_key="KEY",
     api_base="URL",
     model_name="qwen2.5-72b"
@@ -104,21 +104,20 @@ bench = WikiBench(
 # Шаг 0: подготовка окружения (скачивание данных, эмбеддингов и т. д.)
 # bench.prepare_env()
 
-# --- Независимые оценки генерации-----------------------------------------
-# 1. Ранжирование источников
-score_query = bench.rank_query(reference_mode=0)
+# Ранжирование источников
+score_query = wiki_bench.rank_query(reference_mode=0)
 print("Score (query):", score_query)
 
-# 2. Генерация плана
-score_outline = bench.rank_outline(
-    neighbour_count=1,      # число соседних сниппетов
-    description_mode=0,     # 0 — напрямую по кластеру, 1 — через описание
-    mode=1                  # 0 — чистый k‑means, 1 — фиксированные центры
+# Генерация плана
+score_outline = wiki_bench.rank_outline(
+    neighbour_count=1,      
+    description_mode=0,   
+    mode=1                 
 )
 print("Score (outline):", score_outline)
 
-# 3. Генерация секций
-score_sections = bench.rank_sections()
+# Генерация секций
+score_sections = wiki_bench.rank_sections()
 print("Score (sections):", score_sections)
 ```
 
