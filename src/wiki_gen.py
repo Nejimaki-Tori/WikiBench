@@ -41,11 +41,26 @@ Output:
 
 REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT = """
 Ты — интеллектуальный помощник, который пишет, о чем будет вся статья с данным названием.
-По названию статьи распиши, используя только 5 предложений, о чем может быть вся статья.
+По названию статьи распиши, используя 2-5 предложений, о чем может быть вся статья.
+Отвечай на русском языке.
 
 Составь ответ в поле "text" для следующего ввода:
 "article_title": "{article_title}",
 
+"text": ""
+"""
+
+REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT_ENG = """
+You are an intelligent assistant tasked with writing a summary for an article.
+Given the article's title (which may be in Russian), write a short overview of what the article is generally about.
+Based on the title of the article, describe in 2-5 sentences what the entire article could be about.
+Your response *must* be written in English.
+
+Input:
+
+Article title: {article_title}
+
+Output:
 "text": ""
 """
 
@@ -232,128 +247,104 @@ class WikiGen:
     def __init__(self, client):
         self.client = client
 
-    async def get_ref_subqueries(self, page, mode=0):
+    def extract_response(self, response):
+        return response.choices[0].message.content.strip() if response.choices else None
+        
+    #-----------------------------ANNOTATIONS------------------------------------#
+    async def get_ref_subqueries(self, page, mode=0, reference_mode=1, name=None):
         '''
         Функция для получения эталонного плана статьи по данным заголовкам
         '''
-        if not page.outline:
-            print('Empty page!')
-            return
-        if mode == 0:
-            myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT
+        if reference_mode:
+            if not page.outline:
+                print('Empty page!')
+                return
+            if mode == 0:
+                myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT
+            else:
+                myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT_ENG
+            headers = [header[1] for header in page.outline.keys() if header[0] == 'h2']
+            headers_formatted = "\n".join(f"- {h}" for h in headers)
+            myprompt = myprompt.format(article_title=page.name, headers=headers_formatted)
         else:
-            myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT_ENG
-        headers = [header[1] for header in page.outline.keys() if header[0] == 'h2']
-        headers_formatted = "\n".join(f"- {h}" for h in headers)
-        myprompt = myprompt.format(article_title=page.name, headers=headers_formatted)
+            if mode == 0:
+                myprompt = REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT
+            else:
+                myprompt = REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT_ENG
+            myprompt = myprompt.format(article_title=name)
+
         res = await self.client.get_completion(myprompt)
-        
-        if res.choices is not None:
-            response = res.choices[0].message.content.strip()
+        response = self.extract_response(res)
+        if not response:
+            print("Couldn't get the answer")
+            return
+        if reference_mode:
             return (page.name, response)
         else:
-            print("Couldn't get the answer")
-
+            return response
+            
+    #--------------------------------------------OUTLINE-------------------------------------------------------#
     async def get_cluster_description(self, name, cluster_text, description_mode=0, cluster_level_refine=False):
         if description_mode:
             myprompt = CLUSTER_DESCRIPTION_PROMPT.format(name, cluster_text)
         else:
             myprompt = CLUSTER_OUTLINE_PROMPT.format(name, cluster_text)
-        #print('check prompt  ', len(myprompt))
-        res = await self.client.get_completion(myprompt)
-        if res.choices is not None:
-            response = res.choices[0].message.content.strip()
-            if description_mode:
-                myprompt = OUTLINE_FROM_DESCRIPTION.format(name, response)
-                #print('check prompt 2   ', len(myprompt))
-                res = await self.client.get_completion(myprompt)
-                if res.choices is not None:
-                    response = res.choices[0].message.content.strip()
-                    if cluster_level_refine:
-                        #print('erm?')
-                        myprompt = COMBINE_CLUSTER_PROMPT.format(name, response)
-                        res = await self.client.get_completion(myprompt)
-                    if res.choices is not None:
-                        response = res.choices[0].message.content.strip()
-            #print('wha?   ', len(response))
-            return response
-        else:
-            print("Couldn't get the answer")
-
-    async def combine_cluster(self, name, clusters_description):
-        myprompt = COMBINE_CLUSTER_PROMPT.format(name, clusters_description)
-        res = await self.client.get_completion(myprompt)
-        if res.choices is not None:
-            response = res.choices[0].message.content.strip()
-            return response
-        else:
-            print("Couldn't get the answer")
-
-    async def combine_outline(self, name, outlines):
-        myprompt = COMBINE_OUTLINE_PROMPT.format(name, outlines)
-        res = await self.client.get_completion(myprompt)
-        if res.choices is not None:
-            response = res.choices[0].message.content.strip()
-            return response
-        else:
-            print("Couldn't get the answer")
             
+        res = await self.client.get_completion(myprompt)
+        response = self.extract_response(res)
+        
+        if description_mode and response:
+            myprompt = OUTLINE_FROM_DESCRIPTION.format(name, response)
+            res = await self.client.get_completion(myprompt)
+            response = self.extract_response(res)
+            
+            if cluster_level_refine and response:
+                myprompt = COMBINE_CLUSTER_PROMPT.format(name, response)
+                res = await self.client.get_completion(myprompt)
+                response = self.extract_response(res)
+
+        if not response:
+            print("Couldn't get the answer!")
+        return response
+
+    async def generate_outline(self, clusters, name, description_mode=0):
+        cluster_outlines = AsyncList()
+        for label, sample_snippet in clusters.items():
+            cluster_outlines.append(self.get_cluster_description(name, sample_snippet, description_mode))
+        await cluster_outlines.complete_couroutines(batch_size=40)
+        cluster_outlines = await cluster_outlines.to_list()
+        mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
+        #print('Length of generated outline: ', len(mega_outline))
+        myprompt =  COMBINE_OUTLINE_PROMPT.format(name, mega_outline)
+        res = await self.client.get_completion(myprompt)
+        outline = self.extract_response(res)
+        if not outline:
+            print("Couldn't get the answer!")
+        return outline
+
+    #-----------------------------------------------RANKING------------------------------------------------#
     async def process_text(self, i1: int, text: str, name: str, positive_choice: str, negative_choice: str):
         """
-        Функция обрабатывает ОДИН текст:
-        - Разбивает его на сниппеты по 2000 слов с перекрытием 512
-        - Для каждого сниппета формирует запрос `prompt` и получает вероятности
+        Функция обрабатывает один сниппет:
+        - Формирует prompt и получает вероятности
         - Возвращает (индекс, вероятность)
         """
-        words = text.split()
-        window_size = 2000
-        overlap = 512
-        windows = []
-        i = 0
-        while i < len(words):
-            snippet = ' '.join(words[i: i + window_size])
-            windows.append(snippet)
-            if i + window_size >= len(words):
-                break
-            i += window_size - overlap
-            
-        snippet_probs = AsyncList()
-    
-        for k, snippet in enumerate(windows):
-            prompt = RANKING_PROMPT.format(name, snippet, positive_choice, negative_choice)
-            snippet_probs.append(
-                self.client.get_probability(
-                    prompt, 
-                    rep_penalty=1.0, 
-                    max_tokens=10
-                )
-            )
-    
-        await snippet_probs.complete_couroutines(batch_size=20)
-        snippet_results = await snippet_probs.to_list()
-        combined_prob = 0.0
-        count = 0
-        prob_val_neg = 0
-        prob_val_pos = 0
-        prob_val = 0
-        for sp in snippet_results:
-            if negative_choice in sp:
-                prob_val_neg = sp[negative_choice]
-            if positive_choice in sp:
-                prob_val_pos = sp[positive_choice]
+        myprompt = RANKING_PROMPT.format(name, text, positive_choice, negative_choice)
+        snippet_result = await self.client.get_probability(myprompt, rep_penalty=1.0, max_tokens=10)
+        prob_val_neg = 0.0
+        prob_val_pos = 0.0
+        prob_val = 0.0
+        if negative_choice in snippet_result:
+            prob_val_neg = snippet_result[negative_choice]
+        if positive_choice in snippet_result:
+            prob_val_pos = snippet_result[positive_choice]
 
-            if prob_val_neg > prob_val_pos:
-                prob_val = 1 - prob_val_neg
-            elif prob_val_pos != 0:
-                prob_val = prob_val_pos
-    
-            combined_prob += prob_val
-            count += 1
-    
-        if count > 0:
-            combined_prob /= count
-    
-        return (i1, combined_prob)
+        if prob_val_neg > prob_val_pos:
+            prob_val = 1 - prob_val_neg
+        else:
+            prob_val = prob_val_pos
+            
+        return (i1, prob_val)
         
     async def filter_sources(self, name, texts):
         """
@@ -380,20 +371,8 @@ class WikiGen:
         final_probs = await probs.to_list()
         final_probs = sorted(final_probs)
         return final_probs
-    
-    async def generate_outline(self, clusters, name, description_mode=0):
-        cluster_outlines = AsyncList()
-        for label, sample_snippet in clusters.items():
-            cluster_outlines.append(self.get_cluster_description(name, sample_snippet, description_mode))
-        await cluster_outlines.complete_couroutines(batch_size=20)
-        cluster_outlines = await cluster_outlines.to_list()
-        mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
-        #print(len(mega_outline))
-        outline = await self.combine_outline(name, mega_outline)
-        return outline
 
-
-
+    #--------------------------------SECTIONS------------------------------------#
     async def get_first_description(self, name, section, snippet_text, pred_text):
         if pred_text:
             myprompt = COMBINE_DESCRIPTION_PROMPT.format(name, section[1], pred_text, snippet_text)
@@ -440,6 +419,8 @@ class WikiGen:
             print("Couldn't get the answer")
 
     async def get_group_description(self, group):
+        if len(group) == 1:
+            return group[0]
         batched_snippets = []
         i = 0
         while i < len(group):
@@ -464,7 +445,7 @@ class WikiGen:
         group_summary = AsyncList()
         for group in groups:
             group_summary.append(self.get_group_description(group))
-        await group_summary.complete_couroutines(batch_size=10)
+        await group_summary.complete_couroutines(batch_size=5)
         group_summary = await group_summary.to_list()
         return group_summary
         
@@ -480,6 +461,15 @@ class WikiGen:
         draft_cluster_outline = "\n\n".join(f"- {desc}" for desc in cluster_descriptions)
         cluster_outline = await self.combine_cluster(name, draft_cluster_outline)
         return cluster_outline
+
+    async def combine_cluster(self, name, clusters_description):
+        myprompt = COMBINE_CLUSTER_PROMPT.format(name, clusters_description)
+        res = await self.client.get_completion(myprompt)
+        if res.choices is not None:
+            response = res.choices[0].message.content.strip()
+            return response
+        else:
+            print("Couldn't get the answer")
     
     async def generate_outline(self, clusters, name):
         cluster_outlines = AsyncList()
