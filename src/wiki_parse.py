@@ -7,31 +7,39 @@ import re
 import time
 
 class WikiParser:
-    def __init__(self, article_name: str, verbose=True):
+    def __init__(self, article_name: str, verbose=True, is_downloaded=False):
         self.name = article_name
         self.cleared_name = re.sub(r'[<>:"/\\|?*]', '', article_name)
         self.headers = {"User-Agent": "Mozilla/5.0 (X11; CrOS x86_64 12871.102.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.141 Safari/537.36"}
         self.link = ('https://ru.ruwiki.ru/wiki/' + self.name).replace(" ", "_")
+        self.path = r'bin/Html/'
         max_attempts = 5
-        for attempt in range(1, max_attempts + 1):
-            try:
-                self.response = requests.get(
-                    self.link,
-                    headers=self.headers,
-                    stream=True,
-                    allow_redirects=False,
-                    timeout=(3, 7)
-                )
-                (self.response).raise_for_status()
-                break
-            except requests.RequestException as e:
-                if attempt == max_attempts:
-                    raise e 
-                else:
-                    print('Trying again!')
-                    time.sleep(1)
+        if is_downloaded:
+            with open(self.path + self.cleared_name + '.html', 'r', encoding='utf-8') as f:
+                self.html_text = f.read()
+        else:
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    self.response = requests.get(
+                        self.link,
+                        headers=self.headers,
+                        stream=True,
+                        allow_redirects=False,
+                        timeout=(3, 7)
+                    )
+                    (self.response).raise_for_status()
+                    break
+                except requests.RequestException as e:
+                    if attempt == max_attempts:
+                        raise e 
+                    else:
+                        print('Trying again!')
+                        time.sleep(1)
+            self.html_text = self.response.text
+            with open(self.path + self.cleared_name + '.html', 'w', encoding='utf-8') as f:
+                f.write(self.response.text)
         self.verbose = verbose
-        self.parser = BeautifulSoup(self.response.text, 'html.parser')
+        self.parser = BeautifulSoup(self.html_text, 'html.parser')
         self.outline = None
         self.text = ""
         self.links = None

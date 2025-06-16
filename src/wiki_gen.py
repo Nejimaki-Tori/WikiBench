@@ -242,7 +242,6 @@ QA_ANSWERS_PROMPT = """
 QA_COMPARE_QUESTIONS_PROMPT = """
 Дан вопрос и даны два ответа на него. Скажи {}, если ответы совпадают или {} иначе.
 """
-
 class WikiGen:
     def __init__(self, client):
         self.client = client

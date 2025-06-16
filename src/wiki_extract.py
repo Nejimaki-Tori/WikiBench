@@ -14,8 +14,8 @@ import os
 MIN_THRESHOLD = 1500
 
 class Extracter(WikiParser):
-    def __init__(self, article_name: str, downloaded: bool=False, verbose=True):
-        super().__init__(article_name)
+    def __init__(self, article_name: str, downloaded: bool=False, verbose=True, html=False):
+        super().__init__(article_name, verbose, html)
         self.filtered_outline = None
         self.filtered_text = None
         self.verbose = verbose
