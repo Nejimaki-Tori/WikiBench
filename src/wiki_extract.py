@@ -14,11 +14,12 @@ import os
 MIN_THRESHOLD = 1500
 
 class Extracter(WikiParser):
-    def __init__(self, article_name: str, downloaded: bool=False, verbose=True, html=False):
-        super().__init__(article_name, verbose, html)
+    def __init__(self, article_name: str, downloaded: bool=False, verbose=True, html=False, needs_saving=True):
+        super().__init__(article_name, verbose, html, needs_saving)
         self.filtered_outline = None
         self.filtered_text = None
         self.verbose = verbose
+        self.needs_saving = needs_saving
         save_dir = os.path.join("Articles", "Downloaded_Sources_List")
         os.makedirs(save_dir, exist_ok=True)
         self.file_path = os.path.join(save_dir, f"{self.cleared_name.replace(" ", "_")}.json")
@@ -95,9 +96,9 @@ class Extracter(WikiParser):
                         successful_urls.append(ref_key)
                 except:
                     pass
-        
-        with open(self.file_path, "w", encoding="utf-8") as f:
-            json.dump(successful_urls, f, ensure_ascii=False, indent=2)
+        if self.needs_saving:
+            with open(self.file_path, "w", encoding="utf-8") as f:
+                json.dump(successful_urls, f, ensure_ascii=False, indent=2)
 
         self.downloaded_links = successful_urls
 

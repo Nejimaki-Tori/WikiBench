@@ -120,13 +120,6 @@ class WikiEval(WikiUtils):
         #print(len(collected_snippets[0]))
         #print(collected_snippets[0])
         #return
-        '''
-        for a, b in collected_snippets.items():
-            print(a)
-            print(len(b))
-            print()
-        return
-        '''
         outline = await self.client.generate_outline(collected_snippets, name, description_mode)
         return outline
 
@@ -265,6 +258,7 @@ class WikiEval(WikiUtils):
         if not filtered_snippets:
             return -1
         summarized_snippets = await self.client.summarize_groups(filtered_snippets)
+        # generated_text = await self.client.generate_section(section, summarized_snippets, page.name)
         if not summarized_snippets:
             return -1
         i = 0
@@ -283,7 +277,7 @@ class WikiEval(WikiUtils):
         for section, snips_id in section_to_sn.items():
             sections.append(self.get_section(section, snips_id, page))
             secs.append(section)
-        await sections.complete_couroutines(batch_size=4)
+        await sections.complete_couroutines(batch_size=8)
         sections = await sections.to_list()
         result = {}
         for sn, txt in zip(secs, sections):

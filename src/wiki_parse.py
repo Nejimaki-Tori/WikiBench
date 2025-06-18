@@ -7,12 +7,13 @@ import re
 import time
 
 class WikiParser:
-    def __init__(self, article_name: str, verbose=True, is_downloaded=False):
+    def __init__(self, article_name: str, verbose=True, is_downloaded=False, needs_saving=True):
         self.name = article_name
         self.cleared_name = re.sub(r'[<>:"/\\|?*]', '', article_name)
         self.headers = {"User-Agent": "Mozilla/5.0 (X11; CrOS x86_64 12871.102.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/81.0.4044.141 Safari/537.36"}
         self.link = ('https://ru.ruwiki.ru/wiki/' + self.name).replace(" ", "_")
         self.path = r'bin/Html/'
+        self.verbose = verbose
         max_attempts = 5
         if is_downloaded:
             with open(self.path + self.cleared_name + '.html', 'r', encoding='utf-8') as f:
@@ -33,12 +34,13 @@ class WikiParser:
                     if attempt == max_attempts:
                         raise e 
                     else:
-                        print('Trying again!')
+                        if self.verbose:
+                            print('Trying again!')
                         time.sleep(1)
             self.html_text = self.response.text
-            with open(self.path + self.cleared_name + '.html', 'w', encoding='utf-8') as f:
-                f.write(self.response.text)
-        self.verbose = verbose
+            if needs_saving:
+                with open(self.path + self.cleared_name + '.html', 'w', encoding='utf-8') as f:
+                    f.write(self.response.text)
         self.parser = BeautifulSoup(self.html_text, 'html.parser')
         self.outline = None
         self.text = ""

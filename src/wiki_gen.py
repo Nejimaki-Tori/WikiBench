@@ -255,7 +255,7 @@ class WikiGen:
         Функция для получения эталонного плана статьи по данным заголовкам
         '''
         if reference_mode:
-            if not page.outline:
+            if not page or not page.outline:
                 print('Empty page!')
                 return
             if mode == 0:

@@ -55,10 +55,10 @@ class WikiBench:
         self.article_gen_logger = []
         self.retry_attempts = 5
 
-    def get_article(self, name, retrieve_sources=False, is_downloaded=False, verbose=False):
+    def get_article(self, name, retrieve_sources=False, is_downloaded=False, verbose=False, html=True, needs_saving=True):
         if verbose:
             print('Article name: ', name)
-        page = Extracter(name, is_downloaded, verbose)
+        page = Extracter(name, is_downloaded, verbose, html, needs_saving)
         page.get_references()
         page.get_outline()
         if retrieve_sources and not is_downloaded:
@@ -101,15 +101,16 @@ class WikiBench:
                 f.write(annotations[i + 1][1]) 
 
         
-    async def rank_query(self):
-        texts = []
-        for subdir, _, files in os.walk(r'Generation\Subqueries_ref\Annotations'):
-            for file in files:
-                if file.endswith(".txt"):
-                    file_path = os.path.join(subdir, file)
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        text = f.read()
-                        texts.append(text)
+    async def rank_query(self, reference_mode=1):
+        if reference_mode:
+            texts = []
+            for subdir, _, files in os.walk(r'Generation\Subqueries_ref\Annotations'):
+                for file in files:
+                    if file.endswith(".txt"):
+                        file_path = os.path.join(subdir, file)
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            text = f.read()
+                            texts.append(text)
         
         base_dir = os.path.join('Articles', 'Sources')
         
@@ -125,6 +126,20 @@ class WikiBench:
         ndcg_s = 0
         pr_r_s = 0
         count = 0
+        if not reference_mode:
+            annotations = AsyncList()
+            for name, _ in topR:
+                annotations.append(self.wiki_writer.get_ref_subqueries(None, 0, 0, name))
+                annotations.append(self.wiki_writer.get_ref_subqueries(None, 1, 0, name))
+        
+            await annotations.complete_couroutines(batch_size=40)
+            annotations = await annotations.to_list()
+            new_texts = annotations
+            texts = []
+            for i in range(0, len(new_texts), 2):
+                new_text = new_texts[i] + '\n' + new_texts[i + 1]
+                texts.append(new_text)
+            
         for annotation, (name, topK) in zip(texts, topR):
             print(name)
             count += 1
@@ -147,13 +162,17 @@ class WikiBench:
             print(name)
             count += 1
             page = self.get_article(name, is_downloaded=True)
-            p, r, f = await self.wiki_evaluater.rank_outline(name, mode=mode, page=page, neighbor_count=neighbor_count, description_mode=description_mode)
-            print('Pr: ', p, ' rec: ', r, ' f: ', f)
-            print()
-            self.outline_logger.append((p, r, f))
-            p_s += p
-            r_s += r
-            f_s += f
+            try:
+                p, r, f = await self.wiki_evaluater.rank_outline(name, mode=mode, page=page, neighbor_count=neighbor_count, description_mode=description_mode)
+                print('Pr: ', p, ' rec: ', r, ' f: ', f)
+                print()
+                self.outline_logger.append((p, r, f))
+                p_s += p
+                r_s += r
+                f_s += f
+            except:
+                print('error while generating')
+                continue
         return p_s / count, r_s / count, f_s / count
 
     async def rank_sections(self):
