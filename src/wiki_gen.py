@@ -5,6 +5,7 @@ import json
 import random
 from tqdm.auto import tqdm
 from openai_utils import AsyncList, LlmCompleter
+from scipy.special import softmax
 
 REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT = """
 Ты — интеллектуальный помощник, который составляет аннотацию для статьи.
@@ -42,10 +43,11 @@ Output:
 REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT = """
 Ты — интеллектуальный помощник, который пишет, о чем будет вся статья с данным названием.
 По названию статьи распиши, используя 2-5 предложений, о чем может быть вся статья.
-Отвечай на русском языке.
+Отвечай на русском языке. Напиши только сам текст.
 
-Составь ответ в поле "text" для следующего ввода:
-"article_title": "{article_title}",
+Ввод:
+
+Article title: "{article_title}",
 
 "text": ""
 """
@@ -76,7 +78,7 @@ RANKING_PROMPT = """
 """
 
 CLUSTER_OUTLINE_PROMPT = """
-Ты — эксперт по написанию статей Википедии. На основе темы статьи и предложенных источников составь план ОДНОЙ секции, которая логически объединяет представленные материалы.
+Ты — эксперт по написанию статей РУССКОЯЗЫЧНОЙ Википедии. На основе темы статьи и предложенных источников составь план ОДНОЙ секции, которая логически объединяет представленные материалы.
 
 Твоя задача:
 1. Придумай подходящее название для этой секции, отражающее суть текстов.
@@ -125,7 +127,7 @@ OUTLINE_FROM_DESCRIPTION = """
 COMBINE_CLUSTER_PROMPT = """
 Ты - эксперт в написании статей Википедии и занимаешься составлением планов секций. У тебя уже есть несколько черновых вариантов планов, подготовленных экспертами для одной секции и тема статьи, в которой будет эта секция. Объедини эти планы в общий короткий план, который раскроет основные темы этой секции.
 Вот формат в котором нужно все описать:
-1. Используй "# Title" для заголовка раздела, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее.
+1. Используй "# Title" для заголовка раздела, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее, только такой формат с решетками и никакой другой!
 2. Ничего другого писать не нужно.
 3. Старайся ограничиться небольшим числом заголовков (2-5 штук).
 4. Создай план только для одной секции.
@@ -137,14 +139,12 @@ COMBINE_CLUSTER_PROMPT = """
 """
 
 
-COMBINE_OUTLINE_PROMPT = """Тебе нужно написать короткий план для страницы Википедия.
-У тебя уже есть несколько планов секций из этой статьи, подготовленных экспертами по теме статьи.
-Объедини эти планы в общий короткий план, который раскроет основные темы статьи.
+COMBINE_OUTLINE_PROMPT = """Тебе нужно написать короткий план для страницы РУССКОЯЗЫЧНОЙ Википедии. У тебя уже есть несколько планов секций из этой статьи, подготовленных экспертами по теме статьи. Объедини эти планы в общий короткий план, который раскроет основные темы статьи.
 Вот формат в котором нужно все описать:
 1. Начни план с названия интересующей темы "Topic"
-2. Используй "# Title" для заголовков разделов, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее.
+2. Используй "# Title" для заголовков разделов, "## Title" для заголовков подразделов, "### Title" для подподразделов и так далее, только такой формат с решетками и никакой другой!
 3. В конце плана напиши **END**
-4. Ничего другого писать не нужно.
+4. Ничего другого писать не нужно, соблюдай формат ответа.
 
 Тема статьи: {}
 
@@ -160,6 +160,26 @@ WRITE_DESCRIPTION_PROMPT = """
 3. Не добавляй заголовков, пояснений, вводных или заключительных фраз, напиши только текст для секции.
 4. Текст должен соответствовать как теме статьи, так и названию секции.
 5. Если название секции совпадает с названием статьи, то эта секция - "Введение".
+
+Тема статьи: {}
+
+Название секции: {}
+
+Тексты источников:
+{}
+
+Пиши в стиле Википедии!
+"""
+
+SUMMARIZATION_PROMPT = """
+Ты - опытный редактор Википедии и занимаешься написанием текстов для секций. Другие редакторы уже собрали необходимые тексты-источники для данного раздела, тебе нужно только оформить информацию из этого текста в текст для статьи.
+Вот формат в котором нужно все описать:
+1. Извлеки только ключевые факты и основные идеи, содержащиеся именно в этих источниках. Не используй внешние знания.
+2. Сформулируй связный, нейтральный, энциклопедический текст объёмом от 5 до 8 предложений.
+3. Не добавляй заголовков, пояснений, вводных или заключительных фраз, напиши только текст для секции.
+4. Текст должен соответствовать как теме статьи, так и названию секции.
+5. Если название секции совпадает с названием статьи, то эта секция - "Введение".
+6. Устрани дублирование информации между разными фрагментами.
 
 Тема статьи: {}
 
@@ -198,7 +218,7 @@ WRITE_GROUP_PROMPT = """
 Ты - опытный редактор Википедии. Твоя задача — на основе предложенного текста составить краткое аннотированное описание, которое отражает его суть.
 Пожалуйста, следуй следующим инструкциям:
 1. Извлеки только ключевые факты и основные идеи, содержащиеся именно в этом источнике. Не используй внешние знания.
-2. Сформулируй краткое описание в 2–5 предложениях.
+2. Сформулируй краткое описание в 4–6 предложениях.
 3. Не добавляй заголовков, пояснений, вводных или заключительных фраз. Просто выведи краткое содержание.
 Это описание в дальнейшем будет использоваться для составления плана раздела статьи на Википедии, поэтому оно должно быть ёмким и информативным.
 
@@ -243,8 +263,9 @@ QA_COMPARE_QUESTIONS_PROMPT = """
 Дан вопрос и даны два ответа на него. Скажи {}, если ответы совпадают или {} иначе.
 """
 class WikiGen:
-    def __init__(self, client):
+    def __init__(self, client, model_name=None):
         self.client = client
+        self.thinking_pass = " /no_think" if model_name == 'Qwen3-235B-A22B' else ""
 
     def extract_response(self, response):
         return response.choices[0].message.content.strip() if response.choices else None
@@ -264,13 +285,13 @@ class WikiGen:
                 myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT_ENG
             headers = [header[1] for header in page.outline.keys() if header[0] == 'h2']
             headers_formatted = "\n".join(f"- {h}" for h in headers)
-            myprompt = myprompt.format(article_title=page.name, headers=headers_formatted)
+            myprompt = myprompt.format(article_title=page.name, headers=headers_formatted) + self.thinking_pass
         else:
             if mode == 0:
                 myprompt = REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT
             else:
                 myprompt = REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT_ENG
-            myprompt = myprompt.format(article_title=name)
+            myprompt = myprompt.format(article_title=name) + self.thinking_pass
 
         res = await self.client.get_completion(myprompt)
         response = self.extract_response(res)
@@ -281,24 +302,40 @@ class WikiGen:
             return (page.name, response)
         else:
             return response
+
+    async def get_annotations(self, topR):
+        annotations = AsyncList()
+        for name, _ in topR:
+            annotations.append(self.get_ref_subqueries(None, 0, 0, name))
+            annotations.append(self.get_ref_subqueries(None, 1, 0, name))
+    
+        await annotations.complete_couroutines(batch_size=40)
+        annotations = await annotations.to_list()
+        new_texts = annotations
+        texts = []
+        for i in range(0, len(new_texts), 2):
+            new_text = new_texts[i] + '\n' + new_texts[i + 1]
+            texts.append(new_text)
+            
+        return texts
             
     #--------------------------------------------OUTLINE-------------------------------------------------------#
     async def get_cluster_description(self, name, cluster_text, description_mode=0, cluster_level_refine=False):
         if description_mode:
-            myprompt = CLUSTER_DESCRIPTION_PROMPT.format(name, cluster_text)
+            myprompt = CLUSTER_DESCRIPTION_PROMPT.format(name, cluster_text) + self.thinking_pass
         else:
-            myprompt = CLUSTER_OUTLINE_PROMPT.format(name, cluster_text)
+            myprompt = CLUSTER_OUTLINE_PROMPT.format(name, cluster_text) + self.thinking_pass
             
         res = await self.client.get_completion(myprompt)
         response = self.extract_response(res)
         
         if description_mode and response:
-            myprompt = OUTLINE_FROM_DESCRIPTION.format(name, response)
+            myprompt = OUTLINE_FROM_DESCRIPTION.format(name, response) + self.thinking_pass
             res = await self.client.get_completion(myprompt)
             response = self.extract_response(res)
             
             if cluster_level_refine and response:
-                myprompt = COMBINE_CLUSTER_PROMPT.format(name, response)
+                myprompt = COMBINE_CLUSTER_PROMPT.format(name, response) + self.thinking_pass
                 res = await self.client.get_completion(myprompt)
                 response = self.extract_response(res)
 
@@ -314,7 +351,7 @@ class WikiGen:
         cluster_outlines = await cluster_outlines.to_list()
         mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
         #print('Length of generated outline: ', len(mega_outline))
-        myprompt =  COMBINE_OUTLINE_PROMPT.format(name, mega_outline)
+        myprompt =  COMBINE_OUTLINE_PROMPT.format(name, mega_outline) + self.thinking_pass
         res = await self.client.get_completion(myprompt)
         outline = self.extract_response(res)
         if not outline:
@@ -328,8 +365,24 @@ class WikiGen:
         - Формирует prompt и получает вероятности
         - Возвращает (индекс, вероятность)
         """
-        myprompt = RANKING_PROMPT.format(name, text, positive_choice, negative_choice)
-        snippet_result = await self.client.get_probability(myprompt, rep_penalty=1.0, max_tokens=10)
+        myprompt = RANKING_PROMPT.format(name, text, positive_choice, negative_choice) + self.thinking_pass
+        response = await self.client.get_probability(myprompt, rep_penalty=1.0, max_tokens=10)
+        response = response.choices[0]
+        snippet_result = None
+        for _token in response.logprobs.content:
+            token_str = _token.token
+            if token_str != positive_choice and token_str != negative_choice:
+                continue
+            ch, probs = list(
+                zip(*((tok.token, tok.logprob) for tok in _token.top_logprobs))
+            )
+            probs = softmax(probs).tolist()
+
+            snippet_result = dict(zip(ch, probs))
+            
+        if not snippet_result:
+            return (i1, None)
+            
         prob_val_neg = 0.0
         prob_val_pos = 0.0
         prob_val = 0.0
@@ -372,111 +425,122 @@ class WikiGen:
         return final_probs
 
     #--------------------------------SECTIONS------------------------------------#
-    async def get_first_description(self, name, section, snippet_text, pred_text):
-        if pred_text:
-            myprompt = COMBINE_DESCRIPTION_PROMPT.format(name, section[1], pred_text, snippet_text)
-        else:
-            myprompt = WRITE_DESCRIPTION_PROMPT.format(name, section[1], snippet_text)
+    #async def get_first_description(self, name, section, snippet_text, pred_text):
+    #    if pred_text:
+    #        myprompt = COMBINE_DESCRIPTION_PROMPT.format(name, section[1], pred_text, snippet_text)
+    #    else:
+    #        myprompt = WRITE_DESCRIPTION_PROMPT.format(name, section[1], snippet_text)
+    #    res = await self.client.get_completion(myprompt)
+    #    if res.choices is not None:
+    #        response = res.choices[0].message.content.strip()
+    #        return response
+    #    else:
+    #        print("Couldn't get the answer")
+
+    #async def generate_section(self, section, batched_snippets, name):
+    #    pred_text = None
+    #    description = None
+    #    #print('batch count ', len(batched_snippets))
+    #    for snippets in batched_snippets:
+    #        #print('whaaaaaaaaa ', len(snippets))
+    #        #print(snippets[0])
+    #        snippet_text =  "\n\n".join(f"{snippet}" for snippet in snippets)
+    #        description = await self.get_first_description(name, section, snippet_text, pred_text)
+    #        #print('DRAFT DRAFT')
+    #        #print(description)
+    #        #print()
+    #        #print()
+    #        #print('-'*100)
+    #        pred_text = description
+    #    #print(description)
+    #    #print()
+    #    #print()
+    #    #print('-'*100)
+    #    return description
+
+    async def get_description(self, name, section, combined_text):
+        myprompt = SUMMARIZATION_PROMPT.format(name, section[1], combined_text) + self.thinking_pass
         res = await self.client.get_completion(myprompt)
-        if res.choices is not None:
-            response = res.choices[0].message.content.strip()
-            return response
-        else:
-            print("Couldn't get the answer")
+        response = self.extract_response(res)
+        return response
 
-    async def generate_section(self, section, batched_snippets, name):
-        pred_text = None
-        description = None
-        #print('batch count ', len(batched_snippets))
-        for snippets in batched_snippets:
-            #print('whaaaaaaaaa ', len(snippets))
-            #print(snippets[0])
-            snippet_text =  "\n\n".join(f"{snippet}" for snippet in snippets)
-            description = await self.get_first_description(name, section, snippet_text, pred_text)
-            #print('DRAFT DRAFT')
-            #print(description)
-            #print()
-            #print()
-            #print('-'*100)
-            pred_text = description
-        #print(description)
-        #print()
-        #print()
-        #print('-'*100)
-        return description
+    async def generate_section(self, section, snippets, name):
+        summaries = snippets
+        while len(summaries) > 1:
+            groups = [summaries[i:i + 5] for i in range(0, len(summaries), 5)]
+            next_summaries = AsyncList()
+            for group in groups:
+                snippet_text = "\n".join(group)
+                next_summaries.append(self.get_description(name, section, snippet_text))
 
-    async def get_one_group(self, text, pred_text):
-        if pred_text:
-            myprompt = COMBINE_GROUP_PROMPT.format(pred_text, text)
-        else:
-            myprompt = WRITE_GROUP_PROMPT.format(text)
+            await next_summaries.complete_couroutines(batch_size=10)
+            summaries = await next_summaries.to_list()
+
+        return summaries[0]
+
+    #async def get_one_group(self, text, pred_text):
+    #    if pred_text:
+    #        myprompt = COMBINE_GROUP_PROMPT.format(pred_text, text)
+    #    else:
+    #        myprompt = WRITE_GROUP_PROMPT.format(text)
+    #    res = await self.client.get_completion(myprompt)
+    #    if res.choices is not None:
+    #        response = res.choices[0].message.content.strip()
+    #        return response
+    #    else:
+    #        print("Couldn't get the answer")
+    #        
+    #async def get_group_description(self, group):
+    #    if len(group) == 1:
+    #        return group[0]
+    #    batched_snippets = []
+    #    i = 0
+    #    while i < len(group):
+    #        batched_snippets.append(group[i:i+5])
+    #        i += 5
+    #    pred_summary = None
+    #    #print('group num ', len(group))
+    #    #print('group len ', len(group[0]))
+    #    #print('group text ', group[0][:10])
+    #    #print('groups batches ', len(batched_snippets))
+    #    for batch in batched_snippets:
+    #        batch_text = " ".join([text for text in batch])
+    #        group_description = await self.get_one_group(batch_text, pred_summary)
+    #        #print('one group ', group_description[:200])
+    #        pred_summary = group_description
+    #    #print('summed group ', len(group_description))
+    #    #print('-'*100)
+    #    #print()
+    #    return group_description
+
+    async def get_one_group(self, text):
+        myprompt = WRITE_GROUP_PROMPT.format(text) + self.thinking_pass
         res = await self.client.get_completion(myprompt)
-        if res.choices is not None:
-            response = res.choices[0].message.content.strip()
-            return response
-        else:
-            print("Couldn't get the answer")
-
-    async def get_group_description(self, group):
-        if len(group) == 1:
-            return group[0]
-        batched_snippets = []
+        response = self.extract_response(res)
+        return response
+        
+    async def get_group_description(self, group_text):
+        summaries = group_text
         i = 0
-        while i < len(group):
-            batched_snippets.append(group[i:i+5])
-            i += 5
-        pred_summary = None
-        #print('group num ', len(group))
-        #print('group len ', len(group[0]))
-        #print('group text ', group[0][:10])
-        #print('groups batches ', len(batched_snippets))
-        for batch in batched_snippets:
-            batch_text = " ".join([text for text in batch])
-            group_description = await self.get_one_group(batch_text, pred_summary)
-            #print('one group ', group_description[:200])
-            pred_summary = group_description
-        #print('summed group ', len(group_description))
-        #print('-'*100)
-        #print()
-        return group_description
+        while len(summaries) > 1:
+            groups = [summaries[i:i + 5] for i in range(0, len(summaries), 5)]
+            #print('Iteration number for groups: ', i)
+            #print('Number of groups for groups: ', len(groups))
+            i += 1
+            next_summaries = AsyncList()
+            for group in groups:
+                batched_text = "\n".join(group)
+                next_summaries.append(self.get_one_group(batched_text))
+            
+            await next_summaries.complete_couroutines(batch_size=5)
+            summaries = await next_summaries.to_list()
+            
+        return summaries[0] if summaries else ""
 
     async def summarize_groups(self, groups):
         group_summary = AsyncList()
         for group in groups:
             group_summary.append(self.get_group_description(group))
-        await group_summary.complete_couroutines(batch_size=5)
+        await group_summary.complete_couroutines(batch_size=10)
         group_summary = await group_summary.to_list()
         return group_summary
-        
-
-
-'''
-    async def get_one_cluster(self, name, sample_snippets, description_mode=0):
-        cluster_descriptions = AsyncList()
-        for sn in sample_snippets:
-            cluster_descriptions.append(self.get_cluster_description(name, sn, description_mode))
-        await cluster_descriptions.complete_couroutines(batch_size=3)
-        cluster_descriptions = await cluster_descriptions.to_list()
-        draft_cluster_outline = "\n\n".join(f"- {desc}" for desc in cluster_descriptions)
-        cluster_outline = await self.combine_cluster(name, draft_cluster_outline)
-        return cluster_outline
-
-    async def combine_cluster(self, name, clusters_description):
-        myprompt = COMBINE_CLUSTER_PROMPT.format(name, clusters_description)
-        res = await self.client.get_completion(myprompt)
-        if res.choices is not None:
-            response = res.choices[0].message.content.strip()
-            return response
-        else:
-            print("Couldn't get the answer")
-    
-    async def generate_outline(self, clusters, name):
-        cluster_outlines = AsyncList()
-        for label, sample_snippets in clusters.items():
-            cluster_outlines.append(self.get_one_cluster(name, sample_snippets))
-        await cluster_outlines.complete_couroutines(batch_size=20)
-        cluster_outlines = await cluster_outlines.to_list()
-        mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
-        outline = await self.combine_outline(name, mega_outline)
-        return outline
-'''

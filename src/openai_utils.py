@@ -89,13 +89,19 @@ class LlmCompleter:
             }
         )
         response = await completion
-        response = response.choices[0]
-        ch, probs = list(
-            zip(*((tok.token, tok.logprob) for tok in response.logprobs.content[0].top_logprobs))
-        )
-        probs = softmax(probs).tolist()
-        response = dict(zip(ch, probs))
         return response
+        #print(msgs)
+        #print(response.choices[0].message.content.strip())
+        #print()
+        #print()
+        ### response = response.choices[0]
+        ### ch, probs = list(
+        ###     zip(*((tok.token, tok.logprob) for tok in response.logprobs.content[0].top_logprobs))
+        ### )
+        ### probs = softmax(probs).tolist()
+        ### response = dict(zip(ch, probs))
+        ### #print(response)
+        ### return response
 
 class AsyncList:
     def __init__(self):

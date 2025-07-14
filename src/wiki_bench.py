@@ -3,53 +3,56 @@ import re
 from wiki_extract import Extracter
 from wiki_gen import WikiGen
 from openai_utils import LlmCompleter, AsyncList
-from wiki_metrics import WikiEval
+from wiki_evaluater import WikiEvaluater
+from wiki_agent import WikiAgent
 from wiki_utils import WikiUtils
 from tqdm import tqdm
 
-article_names = [
-    'Python',
-    'Летние Олимпийские игры 2024',
-    'Квантовый компьютер',
-    'Присоединение Крыма к Российской Федерации',
-    'Сколково (инновационный центр)',
-    'Tomb Raider (игра, 2013)',
-    'Чёрная дыра',
-    'Экономика США',
-    'Искусственный интеллект',
-    'COVID-19',
-    'Применение искусственного интеллекта',
-    'РИА Новости',
-    'Uncharted 4: A Thief’s End',
-    'Экономика КНР',
-    'Иннополис',
-    'Летние Олимпийские игры 2020',
-    'Солнечная система',
-    'C++',
-    'Си (язык программирования)',
-    'Сбербанк России',
-    'Чёрная смерть',
-    'Яндекс',
-    'Google (компания)',
-    'Большой адронный коллайдер',
-    'Геморрагическая лихорадка Эбола',
-    'Вирус иммунодефицита человека',
-    'Dota 2',
-    'TikTok',
-    'Марс',
-    'YouTube',
-    'Portal 2'
-]
+#article_names = [
+#    'Python',
+#    'Летние Олимпийские игры 2024',
+#    'Квантовый компьютер',
+#    'Присоединение Крыма к Российской Федерации',
+#    'Сколково (инновационный центр)',
+#    'Tomb Raider (игра, 2013)',
+#    'Чёрная дыра',
+#    'Экономика США',
+#    'Искусственный интеллект',
+#    'COVID-19',
+#    'Применение искусственного интеллекта',
+#    'РИА Новости',
+#    'Uncharted 4: A Thief’s End',
+#    'Экономика КНР',
+#    'Иннополис',
+#    'Летние Олимпийские игры 2020',
+#    'Солнечная система',
+#    'C++',
+#    'Си (язык программирования)',
+#    'Сбербанк России',
+#    'Чёрная смерть',
+#    'Яндекс',
+#    'Google (компания)',
+#    'Большой адронный коллайдер',
+#    'Геморрагическая лихорадка Эбола',
+#    'Вирус иммунодефицита человека',
+#    'Dota 2',
+#    'TikTok',
+#    'Марс',
+#    'YouTube',
+#    'Portal 2'
+#]
 
 class WikiBench:
     def __init__(self, url, key, model_name='llama3-70b', pre_load=False):
         self.client = LlmCompleter(api_address=url, api_key=key, model_name=model_name)
         self.env_prepared = pre_load
-        self.wiki_writer = WikiGen(self.client)
-        self.article_names = article_names
         self.model_name = model_name
+        self.wiki_writer = WikiGen(self.client, self.model_name)
+        with open('small_articles_data.txt', 'r', encoding='utf-8') as file:
+            self.article_names = file.read().split('\n')
         self.wiki_utility = WikiUtils(False) if not self.env_prepared else None
-        self.wiki_evaluater = WikiEval(self.wiki_writer, True) if self.env_prepared else None
+        self.wiki_agent = WikiAgent(self.wiki_writer, True) if self.env_prepared else None
+        self.wiki_evaluater = WikiEvaluater(self.wiki_agent.device, self.wiki_agent.encoder) if self.wiki_agent else None
         self.query_logger = []
         self.outline_logger = []
         self.article_gen_logger = []
@@ -71,14 +74,17 @@ class WikiBench:
         for name in self.article_names:
             self.get_article(name, retrieve_sources=True, verbose=True)
 
-    def prepare_env(self, texts_ready=True):
+    def prepare_env(self, texts_ready=True, emb_ready=True, ann_ready=True):
         if not texts_ready:
             self.prepare_texts()
         self.wiki_utility.load_corpus()
-        for name in self.article_names:
-            self.wiki_utility.get_embeddings(name, True)
-        self.get_annotations()
-        self.wiki_evaluater = WikiEval(self.wiki_writer, True)
+        if not emb_ready:
+            for name in self.article_names:
+                self.wiki_utility.get_embeddings(name, True)
+        if not ann_ready:
+            self.get_annotations()
+        self.wiki_agent = WikiAgent(self.wiki_writer, True)
+        self.wiki_evaluater = WikiEvaluater(self.wiki_agent.device, self.wiki_agent.encoder)
         self.env_prepared = True
 
     async def get_annotations(self):
@@ -102,48 +108,23 @@ class WikiBench:
 
         
     async def rank_query(self, reference_mode=1):
-        if reference_mode:
-            texts = []
-            for subdir, _, files in os.walk(r'Generation\Subqueries_ref\Annotations'):
-                for file in files:
-                    if file.endswith(".txt"):
-                        file_path = os.path.join(subdir, file)
-                        with open(file_path, "r", encoding="utf-8") as f:
-                            text = f.read()
-                            texts.append(text)
+        topR = self.wiki_agent.get_number_of_snippets()
         
-        base_dir = os.path.join('Articles', 'Sources')
-        
-        folders = [f for f in os.listdir(base_dir) if os.path.isdir(os.path.join(base_dir, f))]
-        
-        snippets = self.wiki_evaluater.get_texts_from_disk()
-        topR = []
-        for folder in folders:
-            snip = [1 if snippet[0] == folder else 0 for snippet in snippets.keys()]
-            topR.append((folder, sum(snip)))
-            
+        if reference_mode: # получение заранее сгенерированных аннотаций
+            texts = self.wiki_agent.get_annotations_from_disk() 
+        else:              # генерация аннотаций оцениваемой моделью
+            texts = await self.wiki_writer.get_annotations(topR)
+
         self.query_logger = []
         ndcg_s = 0
         pr_r_s = 0
         count = 0
-        if not reference_mode:
-            annotations = AsyncList()
-            for name, _ in topR:
-                annotations.append(self.wiki_writer.get_ref_subqueries(None, 0, 0, name))
-                annotations.append(self.wiki_writer.get_ref_subqueries(None, 1, 0, name))
         
-            await annotations.complete_couroutines(batch_size=40)
-            annotations = await annotations.to_list()
-            new_texts = annotations
-            texts = []
-            for i in range(0, len(new_texts), 2):
-                new_text = new_texts[i] + '\n' + new_texts[i + 1]
-                texts.append(new_text)
-            
         for annotation, (name, topK) in zip(texts, topR):
             print(name)
             count += 1
-            ndcg, pr_r_score = await self.wiki_evaluater.rank_one_query(annotation, 3*topK, name)
+            ranked_docs = await self.wiki_agent.create_ranking(annotation, 3*topK, name)     
+            ndcg, pr_r_score = self.wiki_evaluater.rank_query(ranked_docs, name)
             print(ndcg)
             print(pr_r_score)
             print()
@@ -163,7 +144,14 @@ class WikiBench:
             count += 1
             page = self.get_article(name, is_downloaded=True)
             try:
-                p, r, f = await self.wiki_evaluater.rank_outline(name, mode=mode, page=page, neighbor_count=neighbor_count, description_mode=description_mode)
+                outline = await self.wiki_agent.create_outline(
+                    name, 
+                    mode=mode, 
+                    page=page, 
+                    neighbor_count=neighbor_count, 
+                    description_mode=description_mode
+                )
+                p, r, f = self.wiki_evaluater.rank_outline(outline, page)
                 print('Pr: ', p, ' rec: ', r, ' f: ', f)
                 print()
                 self.outline_logger.append((p, r, f))
@@ -180,5 +168,6 @@ class WikiBench:
         for name in self.article_names:
             print(name)
             page = self.get_article(name, False, True)
-            pr, rec, f1 = await self.wiki_evaluater.rank_sections(page, self.model_name)
+            sections = await self.wiki_agent.create_sections(page, self.model_name)
+            pr, rec, f1 = self.wiki_evaluater.rank_sections(sections, page)
             self.article_gen_logger.append((pr, rec, f1))
