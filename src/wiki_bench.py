@@ -8,40 +8,6 @@ from wiki_agent import WikiAgent
 from wiki_utils import WikiUtils
 from tqdm import tqdm
 
-#article_names = [
-#    'Python',
-#    'Летние Олимпийские игры 2024',
-#    'Квантовый компьютер',
-#    'Присоединение Крыма к Российской Федерации',
-#    'Сколково (инновационный центр)',
-#    'Tomb Raider (игра, 2013)',
-#    'Чёрная дыра',
-#    'Экономика США',
-#    'Искусственный интеллект',
-#    'COVID-19',
-#    'Применение искусственного интеллекта',
-#    'РИА Новости',
-#    'Uncharted 4: A Thief’s End',
-#    'Экономика КНР',
-#    'Иннополис',
-#    'Летние Олимпийские игры 2020',
-#    'Солнечная система',
-#    'C++',
-#    'Си (язык программирования)',
-#    'Сбербанк России',
-#    'Чёрная смерть',
-#    'Яндекс',
-#    'Google (компания)',
-#    'Большой адронный коллайдер',
-#    'Геморрагическая лихорадка Эбола',
-#    'Вирус иммунодефицита человека',
-#    'Dota 2',
-#    'TikTok',
-#    'Марс',
-#    'YouTube',
-#    'Portal 2'
-#]
-
 class WikiBench:
     def __init__(self, url, key, model_name='llama3-70b', pre_load=False):
         self.client = LlmCompleter(api_address=url, api_key=key, model_name=model_name)
@@ -56,6 +22,7 @@ class WikiBench:
         self.query_logger = []
         self.outline_logger = []
         self.article_gen_logger = []
+        self.stream_results = False
         self.retry_attempts = 5
 
     def get_article(self, name, retrieve_sources=False, is_downloaded=False, verbose=False, html=True, needs_saving=True):
@@ -116,58 +83,72 @@ class WikiBench:
             texts = await self.wiki_writer.get_annotations(topR)
 
         self.query_logger = []
-        ndcg_s = 0
-        pr_r_s = 0
-        count = 0
         
         for annotation, (name, topK) in zip(texts, topR):
             print(name)
-            count += 1
-            ranked_docs = await self.wiki_agent.create_ranking(annotation, 3*topK, name)     
+            ranked_docs = await self.wiki_agent.create_ranking(annotation, 3*topK, name)
             ndcg, pr_r_score = self.wiki_evaluater.rank_query(ranked_docs, name)
-            print(ndcg)
-            print(pr_r_score)
-            print()
             self.query_logger.append((ndcg, pr_r_score))
-            ndcg_s += ndcg
-            pr_r_s += pr_r_score
-        return ndcg_s / count, pr_r_s / count
+        return self.wiki_evaluater.mean_value(query_logger)
+
+    async def query_stream(self, reference_mode=1):
+        topR  = self.wiki_agent.get_number_of_snippets()
+        
+        if reference_mode: # получение заранее сгенерированных аннотаций
+            texts = self.wiki_agent.get_annotations_from_disk() 
+        else:              # генерация аннотаций оцениваемой моделью
+            texts = await self.wiki_writer.get_annotations(topR)
+    
+        for annotation, (name, topK) in zip(texts, topR):
+            print(name)
+            ranked = await self.wiki_agent.create_ranking(annotation, 3 * topK, name)
+            yield ranked  
+    
 
     async def rank_outline(self, neighbor_count=0, description_mode=0, mode=1):
-        p_s = 0
-        r_s = 0
-        f_s = 0
-        count = 0
         self.outline_logger = []
         for name in self.article_names:
             print(name)
-            count += 1
             page = self.get_article(name, is_downloaded=True)
-            try:
-                outline = await self.wiki_agent.create_outline(
-                    name, 
-                    mode=mode, 
-                    page=page, 
-                    neighbor_count=neighbor_count, 
-                    description_mode=description_mode
-                )
-                p, r, f = self.wiki_evaluater.rank_outline(outline, page)
-                print('Pr: ', p, ' rec: ', r, ' f: ', f)
-                print()
-                self.outline_logger.append((p, r, f))
-                p_s += p
-                r_s += r
-                f_s += f
-            except:
-                print('error while generating')
-                continue
-        return p_s / count, r_s / count, f_s / count
+            outline = await self.wiki_agent.create_outline(
+                name, 
+                mode=mode, 
+                page=page, 
+                neighbor_count=neighbor_count, 
+                description_mode=description_mode
+            )
+            p, r, f = self.wiki_evaluater.rank_outline(outline, page)
+            self.outline_logger.append((p, r, f))
+                
+        return self.wiki_evaluater(self.outline_logger, is_flat=True)
+
+    async def outline_stream(self, neighbor_count=0, description_mode=0, mode=1):
+        for name in self.article_names:
+            print(name)
+            page = self.get_article(name, is_downloaded=True)
+            outline = await self.wiki_agent.create_outline(
+                name, 
+                mode=mode, 
+                page=page, 
+                neighbor_count=neighbor_count, 
+                description_mode=description_mode
+            )
+            yield outline
 
     async def rank_sections(self):
         self.article_gen_logger = []
         for name in self.article_names:
             print(name)
             page = self.get_article(name, False, True)
-            sections = await self.wiki_agent.create_sections(page, self.model_name)
-            pr, rec, f1 = self.wiki_evaluater.rank_sections(sections, page)
+            sections = await self.wiki_agent.create_sections(page)
+            pr, rec, f1 = self.wiki_evaluater.rank_sections(sections, page, self.model_name)
             self.article_gen_logger.append((pr, rec, f1))
+         
+        return self.wiki_evaluater(self.article_gen_logger, is_flat=False)
+
+    async def sections_stream(self):
+        for name in self.article_names:
+            print(name)
+            page = self.get_article(name, False, True)
+            sections = await self.wiki_agent.create_sections(page)
+            yield sections
