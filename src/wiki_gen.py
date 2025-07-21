@@ -3,8 +3,8 @@
 import os
 import json
 import random
-from tqdm.auto import tqdm
 from openai_utils import AsyncList, LlmCompleter
+import math
 from scipy.special import softmax
 
 REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT = """
@@ -265,7 +265,7 @@ QA_COMPARE_QUESTIONS_PROMPT = """
 class WikiGen:
     def __init__(self, client, model_name=None):
         self.client = client
-        self.thinking_pass = " /no_think" if model_name == 'Qwen3-235B-A22B' else ""
+        self.thinking_pass = " /no_think" if model_name == 'Qwen3-235B-A22B' or model_name == 'RefalMachine/RuadaptQwen3-32B-Instruct-v2' else ""
 
     def extract_response(self, response):
         return response.choices[0].message.content.strip() if response.choices else None
@@ -369,33 +369,22 @@ class WikiGen:
         response = await self.client.get_probability(myprompt, rep_penalty=1.0, max_tokens=10)
         response = response.choices[0]
         snippet_result = None
-        for _token in response.logprobs.content:
-            token_str = _token.token
-            if token_str != positive_choice and token_str != negative_choice:
-                continue
-            ch, probs = list(
-                zip(*((tok.token, tok.logprob) for tok in _token.top_logprobs))
-            )
-            probs = softmax(probs).tolist()
+        probs = {positive_choice: [], negative_choice: []}
 
-            snippet_result = dict(zip(ch, probs))
-            
-        if not snippet_result:
-            return (i1, None)
-            
-        prob_val_neg = 0.0
-        prob_val_pos = 0.0
-        prob_val = 0.0
-        if negative_choice in snippet_result:
-            prob_val_neg = snippet_result[negative_choice]
-        if positive_choice in snippet_result:
-            prob_val_pos = snippet_result[positive_choice]
+        for token_info in response.logprobs.content:
+            for variant in token_info.top_logprobs:
+                key = variant.token.strip()
+                if key == positive_choice or key == negative_choice:
+                    probs[key].append(math.exp(variant.logprob))
 
-        if prob_val_neg > prob_val_pos:
-            prob_val = 1 - prob_val_neg
+        prob_pos = max(probs[positive_choice], default=0.0)
+        prob_neg = max(probs[negative_choice], default=0.0)
+
+        if prob_neg > prob_pos:
+            prob_val = 1 - prob_neg
         else:
-            prob_val = prob_val_pos
-            
+            prob_val = prob_pos
+        
         return (i1, prob_val)
         
     async def filter_sources(self, name, texts):

@@ -3,7 +3,6 @@ import glob
 import math
 import numpy as np
 import random
-from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
 import nltk
@@ -14,17 +13,16 @@ import Stemmer
 import re
 import pickle
 from pymorphy3 import MorphAnalyzer
-import torch
 
 class WikiUtils:
-    def __init__(self, pre_load=False):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.encoder = SentenceTransformer("sergeyzh/BERTA").to(self.device)
+    def __init__(self, device=None, encoder=None, pre_load=False):
+        self.device = device
+        self.encoder = encoder
         self.root_dir = r"Articles\Sources"
         self.bm_dir = r'Generation\Utils\bm25_index'
         self.dataset_dir = r'Generation\Utils\text_corpus\snippets.pkl'
         self.embeddings_dir = 'Generation/Utils/embeddings/'
-        self.annotation_dir = r'Generation\Subqueries_ref\Annotations'
+        self.annotation_dir = r'Generation\Annotations'
         self.articles_dir = r'Articles\Sources'
         ru_stopwords = stopwords.words("russian")
         en_stopwords = stopwords.words("english")
@@ -142,7 +140,7 @@ class WikiUtils:
         return corpus_tokens, snippets
 
     def tokenize_query(self, query):
-        return bm25s.tokenize(query, stopwords=self.combined_stopwords, stemmer=self.ultra_stemmer)
+        return bm25s.tokenize(query, show_progress=False, stopwords=self.combined_stopwords, stemmer=self.ultra_stemmer)
 
     def get_embeddings(self, name, force_download=False):
         name = re.sub(r'[<>:"/\\|?*]', '', name)
