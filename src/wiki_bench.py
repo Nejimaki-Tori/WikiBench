@@ -15,16 +15,16 @@ class WikiBench:
         self.device = device
         self.encoder = encoder
         self.wiki_writer = WikiGen(self.client, self.model_name)
+        self.evaluater = LlmCompleter(api_address=url, api_key=key, model_name='llama3-70b')
         with open('small_articles_data.txt', 'r', encoding='utf-8') as file:
             self.article_names = file.read().split('\n')
         self.wiki_utility = WikiUtils(device=self.device, encoder=self.encoder, pre_load=False) if not self.env_prepared else None
         self.wiki_agent = WikiAgent(self.wiki_writer, self.device, self.encoder, True) if self.env_prepared else None
-        self.wiki_evaluater = WikiEvaluater(self.wiki_agent.device, self.wiki_agent.encoder) if self.wiki_agent else None
+        self.wiki_evaluater = WikiEvaluater(self.wiki_agent.device, self.wiki_agent.encoder, self.evaluater) if self.wiki_agent else None
         self.query_logger = []
         self.outline_logger = []
         self.article_gen_logger = []
         self.stream_results = False
-        self.retry_attempts = 5
 
     def get_article(self, name, retrieve_sources=False, is_downloaded=False, verbose=False, html=True, needs_saving=True):
         if verbose:
@@ -117,7 +117,14 @@ class WikiBench:
         self.outline_logger = []
         for name in self.article_names:
             #print(name)
-            page = self.get_article(name, is_downloaded=True)
+            page = self.get_article(
+                name, 
+                retrieve_sources=False, 
+                is_downloaded=True, 
+                verbose=False,
+                html=True,
+                needs_saving=False
+            )
             outline = await self.wiki_agent.create_outline(
                 name, 
                 mode=mode, 
@@ -128,12 +135,19 @@ class WikiBench:
             p, r, f = self.wiki_evaluater.rank_outline(outline, page)
             self.outline_logger.append((p, r, f))
                 
-        return self.wiki_evaluater(self.outline_logger, is_flat=True)
+        return self.wiki_evaluater.calc(self.outline_logger, is_flat=True)
 
     async def outline_stream(self, neighbor_count=0, description_mode=0, mode=1):
         for name in self.article_names:
             #print(name)
-            page = self.get_article(name, is_downloaded=True)
+            page = self.get_article(
+                name, 
+                retrieve_sources=False, 
+                is_downloaded=True, 
+                verbose=False,
+                html=True,
+                needs_saving=False
+            )
             outline = await self.wiki_agent.create_outline(
                 name, 
                 mode=mode, 
@@ -149,10 +163,10 @@ class WikiBench:
             #print(name)
             page = self.get_article(name, False, True)
             sections = await self.wiki_agent.create_sections(page)
-            pr, rec, f1 = self.wiki_evaluater.rank_sections(sections, page, self.model_name)
-            self.article_gen_logger.append((pr, rec, f1))
+            pr, rec, f1, qa_cov, qa_sim = self.wiki_evaluater.rank_sections(sections, page, self.model_name)
+            self.article_gen_logger.append((pr, rec, f1, qa_cov, qa_sim))
          
-        return self.wiki_evaluater(self.article_gen_logger, is_flat=False)
+        return self.wiki_evaluater.calc(self.article_gen_logger, is_flat=False)
 
     async def sections_stream(self):
         for name in self.article_names:
