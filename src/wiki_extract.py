@@ -3,7 +3,7 @@
 import requests
 import re
 import json
-from newspaper import Article, fulltext
+from newspaper import Article
 from goose3 import Goose
 from wiki_parse import WikiParser
 from tqdm import tqdm

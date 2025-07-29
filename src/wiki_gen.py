@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
 
-import os
-import json
-import random
 from openai_utils import AsyncList, LlmCompleter
 import math
-from scipy.special import softmax
 
 REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT = """
 Ты — интеллектуальный помощник, который составляет аннотацию для статьи.

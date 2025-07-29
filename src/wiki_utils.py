@@ -1,11 +1,5 @@
 import os
 import glob
-import math
-import numpy as np
-import random
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
-import nltk
 from nltk.corpus import stopwords
 from datasets import Dataset
 import bm25s

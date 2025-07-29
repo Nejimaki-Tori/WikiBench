@@ -3,7 +3,7 @@
 import asyncio
 import inspect
 from openai import AsyncOpenAI
-from scipy.special import softmax
+#from scipy.special import softmax
 import inspect
 
 

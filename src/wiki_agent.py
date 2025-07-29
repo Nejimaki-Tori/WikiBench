@@ -1,20 +1,12 @@
 # -*- coding: utf-8 -*-
 
-import os
-import glob
 import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 import random
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
-import nltk
-from nltk.corpus import stopwords
-from datasets import Dataset
-import bm25s
-import Stemmer
 import re
-import pickle
 from wiki_utils import WikiUtils
 from openai_utils import AsyncList
 
