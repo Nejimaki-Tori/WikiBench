@@ -42,7 +42,7 @@ class WikiBench:
         for name in self.article_names:
             self.get_article(name, retrieve_sources=True, verbose=True)
 
-    def prepare_env(self, texts_ready=True, window_size=300, emb_ready=True, ann_ready=True):
+    async def prepare_env(self, texts_ready=True, window_size=300, emb_ready=True, ann_ready=True):
         if not texts_ready:
             self.prepare_texts()
         self.wiki_utility.load_corpus(window_size=window_size)
@@ -50,7 +50,7 @@ class WikiBench:
             for name in self.article_names:
                 self.wiki_utility.get_embeddings(name, True)
         if not ann_ready:
-            self.get_annotations()
+            await self.get_annotations()
         self.wiki_agent = WikiAgent(self.wiki_writer, self.device, self.encoder, True)
         self.wiki_evaluater = WikiEvaluater(self.wiki_agent.device, self.wiki_agent.encoder)
         self.env_prepared = True

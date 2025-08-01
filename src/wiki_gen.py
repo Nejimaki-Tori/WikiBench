@@ -2,6 +2,7 @@
 
 from openai_utils import AsyncList, LlmCompleter
 import math
+import re
 
 REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT = """
 Ты — интеллектуальный помощник, который составляет аннотацию для статьи.
@@ -238,33 +239,14 @@ COMBINE_GROUP_PROMPT = """
 {}
 """
 
-QA_QUESTIONS_PROMPT = """
-Тебе нужно задать несколько вопросов по данному тексту секции из статьи Википедии. Ответы на данные вопросы должны содержаться в тексте секции. Задай не более 10 вопросов.
-
-Текст:
-{}
-"""
-
-QA_ANSWERS_PROMPT = """
-Тебе нужно ответить на вопрос, опираясь на данный тебе текст. Используй информацию только из текста. Не используй внешние знания.
-
-Текст:
-{}
-
-Вопрос:
-{}
-"""
-
-QA_COMPARE_QUESTIONS_PROMPT = """
-Дан вопрос и даны два ответа на него. Скажи {}, если ответы совпадают или {} иначе.
-"""
 class WikiGen:
     def __init__(self, client, model_name=None):
         self.client = client
         self.thinking_pass = " /no_think" if model_name == 'Qwen3-235B-A22B' or model_name == 'RefalMachine/RuadaptQwen3-32B-Instruct-v2' else ""
 
     def extract_response(self, response):
-        return response.choices[0].message.content.strip() if response.choices else None
+        text = response.choices[0].message.content.strip() if response.choices else None
+        return re.sub(r"<\/?think>", "", text).strip() if text else None
         
     #-----------------------------ANNOTATIONS------------------------------------#
     async def get_ref_subqueries(self, page, mode=0, reference_mode=1, name=None):

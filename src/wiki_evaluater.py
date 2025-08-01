@@ -96,10 +96,10 @@ class WikiEvaluater():
         return precision_scores, recall_scores, f1
 
         def similarity(self, a, b):
-        emb_1 = self.encoder.encode(a, device=self.device)
-        emb_2 = self.encoder.encode(b, device=self.device)
+            emb_1 = self.encoder.encode(a, device=self.device)
+            emb_2 = self.encoder.encode(b, device=self.device)
     
-        return round(float(self.encoder.similarity(emb_1, emb_2).item()), 3)
+            return round(float(self.encoder.similarity(emb_1, emb_2).item()), 3)
 
 
     async def compute_coverage(

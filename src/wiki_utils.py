@@ -15,6 +15,7 @@ class WikiUtils:
         self.root_dir = r"Articles\Sources"
         self.bm_dir = r'Generation\Utils\bm25_index'
         self.dataset_dir = r'Generation\Utils\text_corpus\snippets.pkl'
+        self.dataset_folder = r'Generation\Utils\text_corpus'
         self.embeddings_dir = 'Generation/Utils/embeddings/'
         self.annotation_dir = r'Generation\Annotations'
         self.articles_dir = r'Articles\Sources'
@@ -39,6 +40,7 @@ class WikiUtils:
         corpus_tokens, snippets = self.tokenize_corpus(save_dataset=save_data, window_size=window_size)
         self.retriever = bm25s.BM25()
         self.retriever.index(corpus_tokens)
+        os.makedirs(save_bm, exist_ok=True)
         self.retriever.save(save_bm, corpus=corpus_tokens)
         return snippets
         
@@ -128,6 +130,7 @@ class WikiUtils:
             stemmer=self.ultra_stemmer
         )
         self.snippets = snippets
+        os.makedirs(self.dataset_folder, exist_ok=True)
         with open(self.dataset_dir, "wb") as f:
             pickle.dump(snippets, f)
         
