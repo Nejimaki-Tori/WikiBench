@@ -163,11 +163,18 @@ class WikiEvaluater():
     
         return answer
 
-    async def generate_answers(self, ref_section, questions):
+    async def generate_answers(self, ref_annotation, questions, cov_flags=None):
         answers = AsyncList()
 
-        for question in questions:
-            answers.append(self.get_answer(ref_section, question))
+        if cov_flags:
+            for question, flag in zip(questions, cov_flags):
+                if flag == 0:
+                    answers.append('')
+                else:
+                    answers.append(self.get_answer(ref_annotation, question))
+        else:
+            for question in questions:
+                answers.append(self.get_answer(ref_annotation, question))
 
         await answers.complete_couroutines(batch_size=40)
         answers = await answers.to_list()
@@ -186,21 +193,26 @@ class WikiEvaluater():
     
         return sum(sims) / len(sims) if sims else 0.0
 
-    async def compute_similarity(self, ref_section, gen_section):
-        questions = await self.generate_key_questions(ref_section)
-        #print(questions)
-        #print()
-        #print()
-        answers_gold = await self.generate_answers(ref_section, questions)
-        #print(answers_gold)
-        #print()
-        #print()
-        answers_gen = await self.generate_answers(gen_section, questions)
+    async def compute_similarity(self, ref_section, gen_section, q, a):
+        if not q or not a:
+            print('wrong!')
+            questions = await self.generate_key_questions(ref_section)
+            #print(questions)
+            #print()
+            #print()
+            answers_gold = await self.generate_answers(ref_section, questions, None)
+            #print(answers_gold)
+            #print()
+            #print()
+        else:
+            questions = q
+            answers_gold = a
+        coverage, cov_flags = await self.compute_coverage(questions, gen_annotation)
+        #print(cov_flags)
+        answers_gen = await self.generate_answers(gen_section, questions, cov_flags)
         #print(answers_gen)
         #print()
         #print()
-        coverage, cov_flags = await self.compute_coverage(questions, gen_annotation)
-        #print(cov_flags)
         answer_similarity = self.compute_answer_similarity(questions, cov_flags, answers_gold, answers_gen)
 
         return coverage, answer_similarity
