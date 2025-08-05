@@ -1,5 +1,6 @@
 import os
 import glob
+import json
 from nltk.corpus import stopwords
 from datasets import Dataset
 import bm25s
@@ -7,9 +8,45 @@ import Stemmer
 import re
 import pickle
 from pymorphy3 import MorphAnalyzer
+from openai_utils import AsyncList
+import aiofiles
+import asyncio
+from wiki_extract import Extracter
+
+QUESTIONS_COVERAGE_PROMPT = """Ты — эксперт в оценивании качества секций статьи. Твоя задача — точно определить, насколько предоставленный фрагмент текста секции отвечает на конкретный вопрос о ключевых аспектах этой секции.
+
+Вопрос:
+{question}
+Текст секции статьи:
+{text}
+
+Содержится ли в этом тексте ответ на вопрос?
+Начни ответ с {yes}, если ответ есть, или с {no}, если ответа нет.
+"""
+
+GOLD_QUESTIONS_PROMPT = """На основе содержания данной секции статьи сформируй несколько ключевых вопросов, ответы на которые можно однозначно дать, прочитав только эту секцию.
+
+Секция статьи:
+---
+{ref_section}
+---
+Каждый вопрос писать с новой строки, без лишних комментариев.
+"""
+
+ANSWER_PROMPT = """На основе содержания данной секции статьи сформируй ответ на заданный ключевой вопрос. Отвечай **строго на основании текста секции**, не добавляя ничего лишнего.
+
+Секция статьи:
+{ref_section}
+
+Ключевой вопрос:
+{key_question}
+
+---
+Пиши только ответ, без повторения вопроса.
+"""
 
 class WikiUtils:
-    def __init__(self, device=None, encoder=None, pre_load=False):
+    def __init__(self, device=None, encoder=None, pre_load=False, agent=None, evaluater=None):
         self.device = device
         self.encoder = encoder
         self.root_dir = r"Articles\Sources"
@@ -19,6 +56,9 @@ class WikiUtils:
         self.embeddings_dir = 'Generation/Utils/embeddings/'
         self.annotation_dir = r'Generation\Annotations'
         self.articles_dir = r'Articles\Sources'
+        self.qa_dir = 'qa_data'
+        self.agent = agent
+        self.evaluater = evaluater
         ru_stopwords = stopwords.words("russian")
         en_stopwords = stopwords.words("english")
         self.combined_stopwords = set(ru_stopwords + en_stopwords)
@@ -31,6 +71,23 @@ class WikiUtils:
         if pre_load:
             self.retriever = bm25s.BM25.load(self.bm_dir, load_corpus=False)
             self.snippets = self.get_texts_from_disk()
+
+    def extract_response(self, response):
+        text = response.choices[0].message.content.strip() if response.choices else None
+        return re.sub(r"<\/?think>", "", text).strip() if text else None
+
+    def get_article(self, name, retrieve_sources=False, is_downloaded=False, verbose=False, html=True, needs_saving=True):
+        '''Получение текстов статей и их разметки'''
+        if verbose:
+            print('Article name: ', name)
+        page = Extracter(name, is_downloaded, verbose, html, needs_saving)
+        page.get_references()
+        page.get_outline()
+        if retrieve_sources and not is_downloaded:
+            page.fast_extracter()
+        if is_downloaded or retrieve_sources:
+            page.get_filtered_outline()
+        return page
             
     def load_corpus(self, save_bm=None, save_data=None, window_size=300):
         if not save_bm:
@@ -197,3 +254,78 @@ class WikiUtils:
                 collected_snippets += found_snippets
             section_to_sn[section] = collected_snippets
         return section_to_sn
+
+    async def generate_key_questions(self, ref_section):
+        myprompt = GOLD_QUESTIONS_PROMPT.format(ref_section=ref_section)
+        
+        res = await self.evaluater.get_completion(myprompt, max_tokens=512)
+        result = self.extract_response(res)
+
+        questions = [q.strip() for q in result.split('\n') if q.strip()]
+        
+        return questions
+    
+    
+    async def get_answer(self, ref_section, key_question):
+        myprompt = ANSWER_PROMPT.format(ref_section=ref_section, key_question=key_question)
+        res = await self.evaluater.get_completion(myprompt, max_tokens=512)
+
+        answer = self.extract_response(res)
+    
+        return answer
+
+    async def generate_answers(self, ref_section, questions):
+        answers = AsyncList()
+
+        for question in questions:
+            answers.append(self.get_answer(ref_section, question))
+
+        await answers.complete_couroutines(batch_size=40)
+        answers = await answers.to_list()
+
+        return answers
+
+    def _as_jsonl(self, article_title, head, text, q, a):
+        entry = {
+            "model": 'qwen235b', # в файле!!!
+            "article_title": article_title,
+            "head": head,
+            "section_text": text,
+            "questions": q,
+            "answers": a
+        }
+        return json.dumps(entry, ensure_ascii=False) + "\n"
+
+    async def get_all_data_qa(self, article_names): # для получения заранее сгенерированных эталонных вопросов и ответов по каждой секции для всех статей
+        file_path = f"{self.qa_dir}/data.jsonl"
+        error_path = f"{self.qa_dir}/error.txt"
+        os.makedirs(self.qa_dir, exist_ok=True)
+        async with aiofiles.open(file_path, "a", encoding="utf-8") as f, aiofiles.open(error_path, "a", encoding="utf-8") as f_error:
+            for name in article_names:
+                print(name)
+                try:
+                    page = self.get_article(
+                        name, 
+                        retrieve_sources=False, 
+                        is_downloaded=True, 
+                        verbose=False,
+                        html=True,
+                        needs_saving=False
+                    )
+                    article = list(page.filtered_outline.items())
+                    #print(article)
+                    #print()
+                    for head, text in article:
+                        print(head)
+                        if text:
+                            questions = await self.generate_key_questions(text)
+                            #print(questions)
+                            answers_gold = await self.generate_answers(text, questions)
+                            #print(answers_gold)
+                            await f.write(self._as_jsonl(page.name, head, text, questions, answers_gold))
+                except (KeyboardInterrupt, asyncio.CancelledError):
+                    raise
+                except:
+                    await f_error.write(f"{name} \n")
+                    await asyncio.sleep(100)
+                    continue
