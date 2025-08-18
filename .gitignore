@@ -1,0 +1,12 @@
+*.txt
+*.html
+*.json
+*.pkl
+*.pyc
+*.jsonl
+*.zip
+*.npy
+*.log
+*-checkpoint.*
+!Generation\Utils\text_corpus\snippets.pkl
+!requirements.txt
