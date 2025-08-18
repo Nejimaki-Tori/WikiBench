@@ -346,7 +346,6 @@ class WikiGen:
         myprompt = RANKING_PROMPT.format(name, text, positive_choice, negative_choice) + self.thinking_pass
         response = await self.client.get_probability(myprompt, rep_penalty=1.0, max_tokens=10)
         response = response.choices[0]
-        snippet_result = None
         probs = {positive_choice: [], negative_choice: []}
 
         for token_info in response.logprobs.content:

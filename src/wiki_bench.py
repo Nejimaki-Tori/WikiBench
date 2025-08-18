@@ -1,6 +1,5 @@
 import os
 import re
-from wiki_extract import Extracter
 from wiki_gen import WikiGen
 from openai_utils import LlmCompleter, AsyncList
 from wiki_evaluater import WikiEvaluater
@@ -15,32 +14,20 @@ class WikiBench:
         self.device = device
         self.encoder = encoder
         self.wiki_writer = WikiGen(self.client, self.model_name)
-        self.evaluater = LlmCompleter(api_address=url, api_key=key, model_name='llama3-70b')
+        self.evaluater = LlmCompleter(api_address=url, api_key=key, model_name='Qwen3-235B-A22B-Instruct-2507')
         with open('small_articles_data.txt', 'r', encoding='utf-8') as file:
             self.article_names = file.read().split('\n')
-        self.wiki_utility = WikiUtils(device=self.device, encoder=self.encoder, pre_load=False) if not self.env_prepared else None
-        self.wiki_agent = WikiAgent(self.wiki_writer, self.device, self.encoder, True) if self.env_prepared else None
+        self.wiki_utility = WikiUtils(device=self.device, encoder=self.encoder, pre_load=False, evaluater=self.evaluater) if not self.env_prepared else None
+        self.wiki_agent = WikiAgent(self.wiki_writer, self.device, self.encoder, True, self.evaluater) if self.env_prepared else None
         self.wiki_evaluater = WikiEvaluater(self.wiki_agent.device, self.wiki_agent.encoder, self.evaluater) if self.wiki_agent else None
         self.query_logger = []
         self.outline_logger = []
         self.article_gen_logger = []
         self.stream_results = False
 
-    def get_article(self, name, retrieve_sources=False, is_downloaded=False, verbose=False, html=True, needs_saving=True):
-        if verbose:
-            print('Article name: ', name)
-        page = Extracter(name, is_downloaded, verbose, html, needs_saving)
-        page.get_references()
-        page.get_outline()
-        if retrieve_sources and not is_downloaded:
-            page.fast_extracter()
-        if is_downloaded or retrieve_sources:
-            page.get_filtered_outline()
-        return page
-
     def prepare_texts(self):
         for name in self.article_names:
-            self.get_article(name, retrieve_sources=True, verbose=True)
+            self.wiki_utility.get_article(name, retrieve_sources=True, verbose=True)
 
     async def prepare_env(self, texts_ready=True, window_size=300, emb_ready=True, ann_ready=True):
         if not texts_ready:
@@ -57,7 +44,7 @@ class WikiBench:
 
     async def get_annotations(self):
         annotations = AsyncList()
-        pages = [self.get_article(
+        pages = [self.wiki_agent.get_article(
             name, 
             retrieve_sources=False, 
             is_downloaded=True, 
@@ -117,7 +104,7 @@ class WikiBench:
         self.outline_logger = []
         for name in self.article_names:
             #print(name)
-            page = self.get_article(
+            page = self.wiki_agent.get_article(
                 name, 
                 retrieve_sources=False, 
                 is_downloaded=True, 
@@ -140,7 +127,7 @@ class WikiBench:
     async def outline_stream(self, neighbor_count=0, description_mode=0, mode=1):
         for name in self.article_names:
             #print(name)
-            page = self.get_article(
+            page = self.wiki_agent.get_article(
                 name, 
                 retrieve_sources=False, 
                 is_downloaded=True, 
@@ -161,7 +148,7 @@ class WikiBench:
         self.article_gen_logger = []
         for name in self.article_names:
             #print(name)
-            page = self.get_article(name, False, True)
+            page = self.wiki_agent.get_article(name, False, True)
             sections = await self.wiki_agent.create_sections(page)
             pr, rec, f1, qa_cov, qa_sim = self.wiki_evaluater.rank_sections(sections, page, self.model_name)
             self.article_gen_logger.append((pr, rec, f1, qa_cov, qa_sim))
@@ -171,6 +158,6 @@ class WikiBench:
     async def sections_stream(self):
         for name in self.article_names:
             #print(name)
-            page = self.get_article(name, False, True)
+            page = self.wiki_agent.get_article(name, False, True)
             sections = await self.wiki_agent.create_sections(page)
             yield name, sections

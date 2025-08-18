@@ -7,6 +7,9 @@ import os
 import razdel
 import numpy as np
 from openai_utils import AsyncList
+from rouge import Rouge
+from razdel import tokenize
+from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
 QUESTIONS_COVERAGE_PROMPT = """Ты — эксперт в оценивании качества секций статьи. Твоя задача — точно определить, насколько предоставленный фрагмент текста секции отвечает на конкретный вопрос о ключевых аспектах этой секции.
 
@@ -61,8 +64,9 @@ class WikiEvaluater():
         r = sum(relevances)
         return sum(relevances[:int(r)])/r if r else 0.0
 
-    def rank_query(self, ranking, true_name):
-        ranking = sorted(ranking, reverse=True)
+    def rank_query(self, ranking, true_name, only_rank_bm=False):
+        if not only_rank_bm:
+            ranking = sorted(ranking, reverse=True)
         relevances = [1 if name == true_name else 0 for _, name in ranking]
         ndcg_score = self.ndcg(relevances)
         r_pr_score = self.r_precision(relevances)
@@ -217,50 +221,81 @@ class WikiEvaluater():
 
         return coverage, answer_similarity
 
-    async def rank_sections(self, result, page):
+    def bertscore(self, gold_text, gen_text):
+        ref_emb =  self.encoder.encode(
+            [s.text for s in razdel.sentenize(gold_text)], 
+            prompt='Classification', 
+            normalize_embeddings=True, 
+            device=self.device
+        )
+
+        pred_emb = self.encoder.encode(
+            [s.text for s in razdel.sentenize(gen_text)], 
+            prompt='Classification',
+            normalize_embeddings=True, 
+            device=self.device
+        )
+
+        sims = pred_emb @ ref_emb.T
+        precision_scores = sims.max(axis=1).mean()
+        recall_scores = sims.max(axis=0).mean()
+
+        if precision_scores + recall_scores == 0:
+            f1 = 0.0
+        else:
+            f1 = 2 * precision_scores * recall_scores / (precision_scores + recall_scores)
+
+        return precision_scores, recall_scores, f1
+
+    def rouge_L(self, ref, pred):
+        rouge = Rouge()
+    
+        score = rouge.get_scores(pred, ref)[0]["rouge-l"]["f"]
+        return score
+    
+    def bleu_score(self, ref_text, pred_text):
+        ref_tokens = [t.text for t in tokenize(ref_text)]
+        pred_tokens = [t.text for t in tokenize(pred_text)]
+        smooth = SmoothingFunction().method1
+    
+        score = sentence_bleu([ref_tokens], pred_tokens, smoothing_function=smooth)
+        return score
+
+    async def rank_sections(self, result, page, need_qa=False):
         pr_scores = []
         rec_scores = []
         f1_scores = []
+        r_l_scores = []
+        bleu_scores = []
         qa_sim_scores = []
         qa_cov_scores = []
         for section in page.filtered_outline.keys():
             gen_text = result.get(section)
             gold_text = page.filtered_outline[section]
             if not gen_text or gen_text == -1:
-                pr_scores.append(0)
-                rec_scores.append(0)
-                f1_scores.append(0)
-                qa_sim_scores.append(0)
-                qa_cov_scores.append(0)
                 continue
-            ref_emb =  self.encoder.encode(
-                [s.text for s in razdel.sentenize(gold_text)], 
-                prompt='Classification', 
-                normalize_embeddings=True, 
-                device=self.device
-            )
-            pred_emb = self.encoder.encode(
-                [s.text for s in razdel.sentenize(gen_text)], 
-                prompt='Classification',
-                normalize_embeddings=True, 
-                device=self.device
-            )
-            sims = pred_emb @ ref_emb.T
-            precision_scores = sims.max(axis=1).mean()
-            recall_scores = sims.max(axis=0).mean()
+
+            precision_scores, recall_scores, f1 = self.bertscore(gold_text, gen_text)
+            
             pr_scores.append(precision_scores)
             rec_scores.append(recall_scores)
-            if precision_scores + recall_scores == 0:
-                f1 = 0.0
-            else:
-                f1 = 2 * precision_scores * recall_scores / (precision_scores + recall_scores)
             f1_scores.append(f1)
-            
-            qa_cov, qa_sim = await self.compute_similarity(gold_text, gen_text)
-            qa_cov_scores.append(qa_cov)
-            qa_sim_scores.append(qa_sim)
-                
-        return pr_scores, rec_scores, f1_scores, qa_cov_scores, qa_sim_scores
+
+            r_l = self.rouge_L(gold_text, gen_text)
+            r_l_scores.append(r_l)
+
+            bleu_sc = self.bleu_score(gold_text, gen_text)
+            bleu_scores.append(bleu_sc)
+
+            if need_qa:
+                qa_cov, qa_sim = await self.compute_similarity(gold_text, gen_text)
+                qa_cov_scores.append(qa_cov)
+                qa_sim_scores.append(qa_sim)
+
+        if need_qa:
+            return pr_scores, rec_scores, f1_scores, r_l_scores, bleu_scores, qa_cov_scores, qa_sim_scores
+        else:
+            return pr_scores, rec_scores, f1_scores
 
     def mean_value(self, data):
         ndcg = [e[0] for e in data]

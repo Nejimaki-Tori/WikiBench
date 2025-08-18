@@ -12,8 +12,8 @@ from openai_utils import AsyncList
 
 
 class WikiAgent(WikiUtils):
-    def __init__(self, client, device=None, encoder=None, pre_load=False):
-        super().__init__(device=device, encoder=encoder, pre_load=pre_load)
+    def __init__(self, client, device=None, encoder=None, pre_load=False, evaluater=None):
+        super().__init__(device=device, encoder=encoder, pre_load=pre_load, evaluater=evaluater)
         self.client = client
     
     async def create_ranking(self, query: str, top_k: int, true_name: str):
