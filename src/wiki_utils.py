@@ -1,126 +1,114 @@
 import os
-import glob
-import json
 from nltk.corpus import stopwords
-from datasets import Dataset
 import bm25s
 import Stemmer
 import re
 import pickle
 from pymorphy3 import MorphAnalyzer
-from openai_utils import AsyncList
-import aiofiles
-import asyncio
-from wiki_extract import Extracter
+from pathlib import Path
+from wiki_extract import Extractor
+from dataclasses import dataclass
 
-QUESTIONS_COVERAGE_PROMPT = """Ты — эксперт в оценивании качества секций статьи. Твоя задача — точно определить, насколько предоставленный фрагмент текста секции отвечает на конкретный вопрос о ключевых аспектах этой секции.
 
-Вопрос:
-{question}
-Текст секции статьи:
-{text}
+CYRILLIC_RE = re.compile(r'[А-Яа-яЁё]')
 
-Содержится ли в этом тексте ответ на вопрос?
-Начни ответ с {yes}, если ответ есть, или с {no}, если ответа нет.
-"""
+@dataclass(frozen=True)
+class SnippetKey:
+    '''Key for getting snippet from the corpus'''
+    article_name: str      # article name (folder)
+    source_id: int    # source number (in article)
+    snippet_id: int   # snippet number (in source document)
 
-GOLD_QUESTIONS_PROMPT = """На основе содержания данной секции статьи сформируй несколько ключевых вопросов, ответы на которые можно однозначно дать, прочитав только эту секцию.
-
-Секция статьи:
----
-{ref_section}
----
-Каждый вопрос писать с новой строки, без лишних комментариев.
-"""
-
-ANSWER_PROMPT = """На основе содержания данной секции статьи сформируй ответ на заданный ключевой вопрос. Отвечай **строго на основании текста секции**, не добавляя ничего лишнего.
-
-Секция статьи:
-{ref_section}
-
-Ключевой вопрос:
-{key_question}
-
----
-Пиши только ответ, без повторения вопроса.
-"""
+# --- MAIN UTILITY CLASS ---
 
 class WikiUtils:
-    def __init__(self, device=None, encoder=None, pre_load=False, agent=None, evaluater=None):
+    '''
+    Class for working with file structures and collecting snippets, bm25 and embeddings info.
+    Also has functions that work with RuWiki articles.
+    '''
+    def __init__(
+        self, 
+        device=None, 
+        encoder=None,
+        root_dir: str = 'Articles', # main folder for articles
+        util_dir: str = 'Utils' # main folder for utility inforamtion (snippets, embeddings, etc.)
+    ):
         self.device = device
         self.encoder = encoder
-        self.root_dir = r"Articles\Sources"
-        self.bm_dir = r'Generation\Utils\bm25_index'
-        self.dataset_dir = r'Generation\Utils\text_corpus\snippets.pkl'
-        self.dataset_folder = r'Generation\Utils\text_corpus'
-        self.embeddings_dir = 'Generation/Utils/embeddings/'
-        self.annotation_dir = r'Generation\Annotations'
-        self.articles_dir = r'Articles\Sources'
-        self.qa_dir = 'qa_data'
-        self.agent = agent
-        self.evaluater = evaluater
-        ru_stopwords = stopwords.words("russian")
-        en_stopwords = stopwords.words("english")
-        self.combined_stopwords = set(ru_stopwords + en_stopwords)
-        #self.russian_stemmer = Stemmer.Stemmer("russian")
-        self.english_stemmer = Stemmer.Stemmer("english")
-        self.pre_load = pre_load
-        self.morph = MorphAnalyzer(lang="ru")
-        self.retriever = None
-        self.snippets = None
-        if pre_load:
-            self.retriever = bm25s.BM25.load(self.bm_dir, load_corpus=False)
-            self.snippets = self.get_texts_from_disk()
-
-    def extract_response(self, response):
-        text = response.choices[0].message.content.strip() if response.choices else None
-        return re.sub(r"<\/?think>", "", text).strip() if text else None
-
-    def get_article(self, name, retrieve_sources=False, is_downloaded=False, verbose=False, html=True, needs_saving=True):
-        '''Получение текстов статей и их разметки'''
-        if verbose:
-            print('Article name: ', name)
-        page = Extracter(name, is_downloaded, verbose, html, needs_saving)
-        page.get_references()
-        page.get_outline()
-        if retrieve_sources and not is_downloaded:
-            page.fast_extracter()
-        if is_downloaded or retrieve_sources:
-            page.get_filtered_outline()
-        return page
-            
-    def load_corpus(self, save_bm=None, save_data=None, window_size=300):
-        if not save_bm:
-            save_bm = self.bm_dir
-        if not save_data:
-            save_data = self.dataset_dir
-        corpus_tokens, snippets = self.tokenize_corpus(save_dataset=save_data, window_size=window_size)
-        self.retriever = bm25s.BM25()
-        self.retriever.index(corpus_tokens)
-        os.makedirs(save_bm, exist_ok=True)
-        self.retriever.save(save_bm, corpus=corpus_tokens)
-        return snippets
         
-    def get_texts_from_disk(self, directory=None):
-        if not directory:
-            directory = self.dataset_dir
-        with open(self.dataset_dir, "rb") as f:
-            return pickle.load(f)
+        self.root_dir = Path(root_dir)
+        self.util_dir = Path(util_dir)
+        
+        self.bm_dir = self.util_dir / 'bm25_index'
+        self.bm_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.dataset_folder = self.util_dir / 'text_corpus'
+        self.dataset_folder.mkdir(parents=True, exist_ok=True)
+        self.dataset_path = self.dataset_folder / 'snippets.pkl'
+
+        self.embeddings_dir = self.util_dir / 'embeddings'
+        self.embeddings_dir.mkdir(parents=True, exist_ok=True)
+        self.annotation_dir = self.util_dir / 'annotations'
+        self.annotation_dir.mkdir(parents=True, exist_ok=True)
+
+        self.combined_stopwords = None
+        self.english_stemmer = None
+        self.morph = None
+        self.bm25 = None
+        self.snippets = None
+
+    # --- Corpus managment block ---
+    
+    def create_article_corpus_from_scratch(self, article_bare_names: list[str] = None):
+        '''Downloads all articles and their sources'''
+        for article_name in article_bare_names: # article names are not cleared from special symbols
+            self.get_article(article_name, retrieve_sources=True, verbose=True)
+
+    def create_corpus_from_scratch(self, article_names: list[str] = None, window_size: int = 600, overlap: int = 0):
+        '''Creates corpus of snippets, bm25 and precomputed embeddings'''
+        ru_stopwords = stopwords.words('russian')
+        en_stopwords = stopwords.words('english')
+        self.combined_stopwords = set(ru_stopwords + en_stopwords)
+
+        self.english_stemmer = Stemmer.Stemmer('english')
+        self.morph = MorphAnalyzer(lang='ru')
+
+        self.build_snippets_from_disk(window_size=window_size, overlap=overlap, needs_saving=True)
+        self.build_bm25_index(needs_saving=True)
+
+        for article_name in article_names:
+            self.get_embeddings(article_cleared_name=article_name, force_recompute=True)        
+
+    def load_created_corpus(self):
+        '''Loads corpus if it is already prepared'''
+        ru_stopwords = stopwords.words('russian')
+        en_stopwords = stopwords.words('english')
+        self.combined_stopwords = set(ru_stopwords + en_stopwords)
+
+        self.english_stemmer = Stemmer.Stemmer('english')
+        self.morph = MorphAnalyzer(lang='ru')
+
+        self.load_snippets_from_disk()
+        self.load_bm25_from_disk()
+
+    # --- Texts and snippets block ---
             
-    def load_texts_from_directory(self, file_extension="*.txt"):
-        """
-        Рекурсивный сбор всех файлов с указанным расширением из root_dir.
-        Возвращает список (article_path, text_content).
-        """
+    def load_texts_from_directory(self, pattern='*.txt'):
+        """Recursive collection of all .txt files"""
         texts = []
-        pattern = os.path.join(self.root_dir, "**", file_extension)
-        for filepath in glob.iglob(pattern, recursive=True):
-            with open(filepath, "r", encoding="utf-8") as f:
-                content = f.read()
-                texts.append((filepath, content))
+        for path in self.root_dir.rglob(pattern):
+            if path.is_file():
+                texts.append((path, path.read_text(encoding='utf-8')))
         return texts
         
-    def chunk_text(self, text: str, window_size=300, overlap=0):
+    def chunk_text(self, text: str, window_size: int = 300, overlap: int = 0):
+        '''Splitting text into snippets'''
+        if window_size <= 0:
+            raise ValueError('Window size must be > 0')
+            
+        if overlap < 0 or overlap >= window_size:
+            raise ValueError('Overlap must be in [0, window_size)')
+            
         words = text.split()
         snippets = []
         i = 0
@@ -132,18 +120,279 @@ class WikiUtils:
             i += window_size - overlap
         return snippets
 
-    def is_cyrillic(self, word):
-        return any(c.lower() not in "abcdefghijklmnopqrstuvwxyz" for c in word)
+    def is_cyrillic(self, word: str) -> bool: # word is considered russian if it has one russian letter in it
+        return bool(CYRILLIC_RE.search(word))
 
     def word_lemmatize(self, word):
+        if self.morph is None:
+            raise ValueError('Morph has not been created!')
+            
         return self.morph.parse(word)[0].normal_form
         
-    def ultra_stemmer(self, words_list):
-        return [
-            self.word_lemmatize(word) if self.is_cyrillic(word) else self.english_stemmer.stemWord(word)
-            for word in words_list
-        ]
+    def ultra_stemmer(self, words):
+        if self.english_stemmer is None:
+            raise ValueError('Stemmer for english language has not been created!')
+            
+        result = []
+        for word in words:
+            if self.is_cyrillic(word):
+                result.append(self.word_lemmatize(word))
+            else:
+                result.append(self.english_stemmer.stemWord(word))
+        
+        return result
 
+    def get_number_of_snippets(self):
+        '''Returns number of snippets per article'''
+        counts = {}
+        for snippet_key in self.snippets.keys():
+            counts[snippet_key.article_name] = counts.get(snippet_key.article_name, 0) + 1
+            
+        return sorted(counts.items(), key = lambda x: x[0])
+
+    def parse_source_id_from_filename(self, path) -> int:
+        stem = path.stem  # 'source_1.txt' -> 'source_1'
+        match = re.search(r'_(\d+)$', stem)
+        if not match:
+            raise ValueError(f'Cannot extract source_id from filename: {path.name}')
+        return int(match.group(1))
+        
+    def build_snippets_from_disk(self, window_size: int = 300, overlap: int = 0, needs_saving: bool = False):
+        '''Collecting snippets from texts from disk'''
+        all_texts = self.load_texts_from_directory(pattern='*.txt')
+        snippets = {}
+        for file_path, content in all_texts:
+            article_name = file_path.parent.name
+            source_id = self.parse_source_id_from_filename(file_path)
+            file_snippets = self.chunk_text(content, window_size=window_size, overlap=overlap)
+            
+            for snippet_id, snippet_text in enumerate(file_snippets):
+                snippet_key = SnippetKey(article_name=article_name, source_id=source_id, snippet_id=snippet_id)
+                snippets[snippet_key] = snippet_text
+                
+        self.snippets = snippets
+        
+        if needs_saving:
+            self.save_snippets_on_disk()
+            
+    def save_snippets_on_disk(self, path: str = None) -> None:
+        '''Saves all snippets on disk'''
+        target_path = self.dataset_path if not path else Path(path)
+        with target_path.open('wb') as f:
+            pickle.dump(self.snippets, f)
+            
+    def load_snippets_from_disk(self, path: str = None):
+        '''Loads all snippets from disk'''
+        target_path = self.dataset_path if not path else Path(path)
+        with target_path.open('rb') as f:
+            self.snippets = pickle.load(f)
+
+    # --- BM25 block ---
+
+    def build_bm25_index(self, needs_saving: bool = False):
+        if self.snippets is None:
+            raise ValueError('Snippets have not been created!')
+
+        if self.combined_stopwords is None:
+            raise ValueError('Empty stopwords list!')
+            
+        corpus_texts = list(self.snippets.values())
+        
+        corpus_tokens = bm25s.tokenize(
+            corpus_texts, 
+            stopwords=self.combined_stopwords, 
+            stemmer=self.ultra_stemmer
+        )        
+
+        bm = bm25s.BM25()
+        bm.index(corpus_tokens)
+        self.bm25 = bm
+
+        if needs_saving:
+            self.save_bm25_on_disk(corpus_tokens)
+
+    def save_bm25_on_disk(self, corpus_tokens, path: str = None):
+        target_path = self.bm_dir if not path else Path(path)
+        self.bm25.save(target_path, corpus=corpus_tokens)
+    
+    def load_bm25_from_disk(self, path: str = None, load_corpus: bool = False):
+        target_path = self.bm_dir if not path else Path(path)
+        bm = bm25s.BM25.load(target_path, load_corpus=load_corpus)
+        self.bm25 = bm
+
+    def tokenize_query(self, query):
+        '''Query tokenesation, same as for the text corpus'''
+        if self.bm25 is None:
+            raise ValueError('BM25 has not been initialised!')
+                    
+        return bm25s.tokenize(
+            query, 
+            show_progress=False, 
+            stopwords=self.combined_stopwords, 
+            stemmer=self.ultra_stemmer
+        )
+
+    # --- Embeddings block ---
+    
+    def get_embeddings(self, article_cleared_name, force_recompute: bool = False):
+        if self.encoder is None:
+            raise ValueError('Encoder is not set!')
+
+        embeddings_path = self.embeddings_dir / f'{article_cleared_name}.pkl'
+        if not force_recompute:
+            return self.load_embeddings_from_disk(embeddings_path=embeddings_path)
+                
+        snippets_filtered = [
+            snippet_text
+            for snippet_key, snippet_text in self.snippets.items() 
+            if snippet_key.article_name == article_cleared_name
+        ]
+        
+        embeddings = self.encoder.encode(
+            snippets_filtered, 
+            device=self.device
+        )
+
+        self.save_embeddings_on_disk(embeddings, embeddings_path=embeddings_path)
+
+        return embeddings
+
+    def load_embeddings_from_disk(self, embeddings_path):
+        if type(embeddings_path) == str:
+            embeddings_path = Path(embeddings_path)
+        with embeddings_path.open('rb') as f:
+            return pickle.load(f)
+
+    def save_embeddings_on_disk(self, embeddings, embeddings_path):
+        if type(embeddings_path) == str:
+            embeddings_path = Path(embeddings_path)
+        with embeddings_path.open('wb') as f:
+            pickle.dump(embeddings, f)
+
+    # --- Article block ---
+    
+    def get_article(
+        self, 
+        name: str, 
+        retrieve_sources=False, 
+        is_downloaded=False, 
+        verbose=False, 
+        html=True, 
+        needs_saving=True
+    ):
+        '''Gets article from ruwiki and its main information (sources, reference positions, etc.)'''
+        if verbose:
+            print('Article name: ', name)
+        page = Extractor(name, is_downloaded, verbose, html, needs_saving)
+        page.get_references()
+        page.get_outline()
+        if retrieve_sources and not is_downloaded:
+            page.fast_extract()
+        if is_downloaded or retrieve_sources:
+            page.get_filtered_outline()
+        return page
+
+    def section_to_references(self, page, doc_num):
+        '''Maps each section with corresponding reference id'''
+        downloaded_links = set(doc_num.keys())
+        ref_to_sections = {}
+        
+        for reference_id, positions in page.references_positions.items():
+            for section_info, *_ in positions:
+                ref_to_sections.setdefault(reference_id, []).append(section_info)
+
+        section_to_refs = page.invert_dict(ref_to_sections)
+        filtered_sections = {}
+        
+        for section_info, references in section_to_refs.items():
+            chosen_refs = list(set(references) & set(downloaded_links))
+            if chosen_refs:
+                filtered_sections[section_info] = chosen_refs
+                
+        return filtered_sections
+
+    def section_to_snippets(self, page):
+        '''
+        Maps each section with its corresponding snippets.
+        Returns dict: {(header, section_name): [(SnippetKey, snippet_text)]}
+        '''
+        if self.snippets is None:
+            raise ValueError('Snippets have not been created!')
+            
+        doc_num = {
+                ref_link: doc_id + 1 for doc_id, ref_link in enumerate(page.downloaded_links)
+            }
+        section_to_refs = self.section_to_references(page, doc_num)
+        section_to_snippets = {}
+        for section, reference_links in section_to_refs.items():
+            collected_snippets = []
+            for reference_link in reference_links:
+                source_id = doc_num[reference_link]
+                for snippet_key, snippet_text in self.snippets.items():
+                    if snippet_key.article_name == page.cleared_name and snippet_key.source_id == source_id:
+                        collected_snippets.append((snippet_key, snippet_text))
+
+            collected_snippets.sort(key=lambda item: (item[0].source_id, item[0].snippet_id))
+            section_to_snippets[section] = collected_snippets
+            
+        return section_to_snippets
+
+    def get_header_embeddings(
+        self,
+        doc_embeddings: dict[int, np.ndarray],
+        doc_available: dict[str, int],
+        source_positions: dict[str, list[tuple[tuple[str, str], int]]],
+        group_levels = ('h1', 'h2'),
+        return_levels = ('h2'),
+    ):
+        '''
+        Maps section with its corresponding embedding of the source text snippet
+        '''
+        header_to_embedding = {}
+        current_header = None
+        current_links = []
+    
+        def finalize_block() -> None:
+            nonlocal current_header, current_links
+            if current_header is None or not current_links:
+                return
+    
+            emb = None
+            for lid in current_links:
+                doc_num = doc_available.get(lid)
+                if doc_num is None:
+                    continue
+                emb = doc_embeddings.get(doc_num)
+                if emb is not None:
+                    break
+    
+            if emb is not None and current_header[0] in return_levels:
+                if current_header not in header_to_embedding:
+                    header_to_embedding[current_header] = emb
+    
+        # Going through sources in theirs order
+        for link_id, positions in source_positions.items():
+            (level, header_text), para_num = positions[0]
+            
+            if level in group_levels:
+                # Finish previous block
+                finalize_block()
+                current_header = (level, header_text)
+                current_links = [link_id]
+            else:
+                # Вложенный заголовок — идёт в текущий блок
+                if current_header is not None:
+                    current_links.append(link_id)
+    
+        # Не забываем последний блок
+        finalize_block()
+    
+        return header_to_embedding
+
+
+
+
+    
     def get_annotations_from_disk(self):
         texts = []
         for subdir, _, files in os.walk(self.annotation_dir):
@@ -154,178 +403,3 @@ class WikiUtils:
                         text = f.read()
                         texts.append(text)
         return texts
-
-    def get_number_of_snippets(self):
-        folders = [f for f in os.listdir(self.articles_dir) if os.path.isdir(os.path.join(self.articles_dir, f))]
-        snippets = self.get_texts_from_disk()
-        topR = []
-        for folder in folders:
-            snip = [1 if snippet[0] == folder else 0 for snippet in snippets.keys()]
-            topR.append((folder, sum(snip)))
-
-        return topR
-
-    def tokenize_corpus(self, window_size=300, overlap=0, save_dataset=None):
-        '''
-        Токенезация корпуса текстов из коллекции скачанных источников
-        '''
-        if not save_dataset:
-            save_dataset = self.dataset_dir
-        all_texts = self.load_texts_from_directory(file_extension="*.txt")
-        snippets = {}
-        for file_path, content in all_texts:
-            file_snippets = self.chunk_text(content, window_size=window_size, overlap=overlap)
-            for idx, snippet in enumerate(file_snippets):
-                article_name = file_path.split("\\")[-2]
-                text_num = int(file_path.split("\\")[-1].split('.')[0].split('_')[1])
-                snippets[(article_name, text_num, idx)] = snippet
-        
-        corpus_texts = [text for text in snippets.values()]
-        corpus_tokens = bm25s.tokenize(
-            corpus_texts, 
-            stopwords=self.combined_stopwords, 
-            stemmer=self.ultra_stemmer
-        )
-        self.snippets = snippets
-        os.makedirs(self.dataset_folder, exist_ok=True)
-        with open(self.dataset_dir, "wb") as f:
-            pickle.dump(snippets, f)
-        
-        return corpus_tokens, snippets
-
-    def tokenize_query(self, query):
-        return bm25s.tokenize(query, show_progress=False, stopwords=self.combined_stopwords, stemmer=self.ultra_stemmer)
-
-    def get_embeddings(self, name, force_download=False):
-        name = re.sub(r'[<>:"/\\|?*]', '', name)
-        snippets_filtered = [sn[1] for sn in self.snippets.items() if sn[0][0] == name]
-        if self.pre_load and not force_download:
-            path = self.embeddings_dir + name + '.pkl'
-            with open(path, "rb") as f:
-                embeddings = pickle.load(f)
-        else:
-            os.makedirs(self.embeddings_dir, exist_ok=True)
-            embeddings = self.encoder.encode(snippets_filtered, prompt='Classification', device=self.device)
-            file_path = os.path.join(self.embeddings_dir, f"{name}.pkl")
-            with open(file_path, "wb") as f:
-                pickle.dump(embeddings, f)
-        return embeddings
-
-    def section_to_references(self, page, doc_num):
-        downloaded_links = set(list(doc_num.keys()))
-        ref_to_sections = {}
-        for ref, pos in page.references_positions.items():
-        #print(pos[0])
-            for p in pos:
-                if ref not in ref_to_sections:
-                    ref_to_sections[ref] = [p[0]]
-                else:
-                    ref_to_sections[ref].append(p[0])
-        section_to_refs = page.invert_dict(ref_to_sections)
-        new_section_to_refs = {}
-        for section in section_to_refs.keys():
-            chosen_refs = list(set(section_to_refs[section]) & set(downloaded_links))
-            if chosen_refs:
-                new_section_to_refs[section] = chosen_refs
-        return new_section_to_refs
-
-    def section_to_snippets(self, page):
-        doc_num = {
-                ref_link: doc_id + 1 for doc_id, ref_link in enumerate(page.downloaded_links)
-            }
-        section_to_refs = self.section_to_references(page, doc_num)
-        #print()
-        #print(section_to_refs)
-        section_to_sn = {}
-        for section, refs in section_to_refs.items():
-            collected_snippets = []
-            #print('finding texts for: ', section)
-            #print(refs)
-            for ref in refs:
-                ref_num = doc_num[ref]
-                found_snippets = [
-                    ((sn_key[0], sn_key[1], sn_key[2]), sn_txt) 
-                    for sn_key, sn_txt in self.snippets.items() 
-                    if int(sn_key[1]) == ref_num 
-                    and sn_key[0] == page.cleared_name
-                ]
-                found_snippets = sorted(found_snippets, key=lambda x: (x[0][1], x[0][2]))
-                #texts_only = [sn[2] for sn in found_snippets]
-                collected_snippets += found_snippets
-            section_to_sn[section] = collected_snippets
-        return section_to_sn
-
-    async def generate_key_questions(self, ref_section):
-        myprompt = GOLD_QUESTIONS_PROMPT.format(ref_section=ref_section)
-        
-        res = await self.evaluater.get_completion(myprompt, max_tokens=512)
-        result = self.extract_response(res)
-
-        questions = [q.strip() for q in result.split('\n') if q.strip()]
-        
-        return questions
-    
-    
-    async def get_answer(self, ref_section, key_question):
-        myprompt = ANSWER_PROMPT.format(ref_section=ref_section, key_question=key_question)
-        res = await self.evaluater.get_completion(myprompt, max_tokens=512)
-
-        answer = self.extract_response(res)
-    
-        return answer
-
-    async def generate_answers(self, ref_section, questions):
-        answers = AsyncList()
-
-        for question in questions:
-            answers.append(self.get_answer(ref_section, question))
-
-        await answers.complete_couroutines(batch_size=40)
-        answers = await answers.to_list()
-
-        return answers
-
-    def _as_jsonl(self, article_title, head, text, q, a):
-        entry = {
-            "model": 'qwen235b', # в файле!!!
-            "article_title": article_title,
-            "head": head,
-            "section_text": text,
-            "questions": q,
-            "answers": a
-        }
-        return json.dumps(entry, ensure_ascii=False) + "\n"
-
-    async def get_all_data_qa(self, article_names): # для получения заранее сгенерированных эталонных вопросов и ответов по каждой секции для всех статей
-        file_path = f"{self.qa_dir}/data.jsonl"
-        error_path = f"{self.qa_dir}/error.txt"
-        os.makedirs(self.qa_dir, exist_ok=True)
-        async with aiofiles.open(file_path, "a", encoding="utf-8") as f, aiofiles.open(error_path, "a", encoding="utf-8") as f_error:
-            for name in article_names:
-                print(name)
-                try:
-                    page = self.get_article(
-                        name, 
-                        retrieve_sources=False, 
-                        is_downloaded=True, 
-                        verbose=False,
-                        html=True,
-                        needs_saving=False
-                    )
-                    article = list(page.filtered_outline.items())
-                    #print(article)
-                    #print()
-                    for head, text in article:
-                        print(head)
-                        if text:
-                            questions = await self.generate_key_questions(text)
-                            #print(questions)
-                            answers_gold = await self.generate_answers(text, questions)
-                            #print(answers_gold)
-                            await f.write(self._as_jsonl(page.name, head, text, questions, answers_gold))
-                except (KeyboardInterrupt, asyncio.CancelledError):
-                    raise
-                except:
-                    await f_error.write(f"{name} \n")
-                    await asyncio.sleep(100)
-                    continue
