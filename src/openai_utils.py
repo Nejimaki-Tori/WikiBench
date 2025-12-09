@@ -3,8 +3,28 @@
 import asyncio
 import inspect
 from openai import AsyncOpenAI
-#from scipy.special import softmax
 import inspect
+
+def extract_response_text(response):
+    choices = getattr(response, 'choices', None)
+    if not choices:
+        return None
+
+    first = choices[0]
+    if hasattr(first, 'message'):
+        text = first.message.content
+    elif isinstance(first, dict) and 'message' in first:
+        text = first['message']['content']
+    else:
+        return None
+
+    if text is None:
+        return None
+
+    text = str(text).strip()
+    text = re.sub(r'</?think>', '', text)
+    
+    return text.strip() or None
 
 
 class LlmCompleter:
