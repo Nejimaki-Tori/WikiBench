@@ -1,114 +1,190 @@
 # -*- coding: utf-8 -*-
 
+import re
 import numpy as np
+
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
-import random
 from sklearn.cluster import KMeans
 from sklearn.metrics import silhouette_score
-import re
-from wiki_utils import WikiUtils
+
+from wiki_utils import SnippetKey
 from openai_utils import AsyncList
 
 
-class WikiAgent(WikiUtils):
-    def __init__(self, client, device=None, encoder=None, pre_load=False, evaluater=None):
-        super().__init__(device=device, encoder=encoder, pre_load=pre_load, evaluater=evaluater)
+class WikiAgent:
+    def __init__(
+        self, 
+        client,
+        utils,
+        device=None, 
+        encoder=None
+    ):  
         self.client = client
+        self.utils = utils
+        self.device = device or self.utils.device
+        self.encoder = encoder or self.utils.device
+
+        self.snippet_keys = None
+        self.snippet_texts = None
+        self.snippets_by_article_grouped = None
+        self.is_cache_built = False
+
+    def build_cache(self):
+        if self.is_cache_built:
+            return
+
+        if self.utils.snippets is None:
+            raise ValueError('No snippets!')
+
+        items = list(self.utils.snippets.items())
+        self.snippet_keys = [k for k, _ in items]
+        self.snippet_texts = [v for _, v in items]
+
+        grouped: dict[tuple[str, int], list[tuple[int, str]]] = {} # groups for snippets per article
+        for snippet_key, snippet_text in items:
+            grouped.setdefault((snippet_key.article_name, snippet_key.source_id), []).append((snippet_key.snippet_id, snippet_text))
+
+        for group_key in grouped:
+            grouped[group_key].sort(key=lambda x: x[0])
+
+        self.snippets_by_article_grouped = grouped
+        self.is_cache_built = True
     
-    async def create_ranking(self, query: str, top_k: int, true_name: str):
+    async def create_ranking(
+        self, 
+        query: str, 
+        top_k: int, 
+        true_article_name: str
+    ):
         '''
-        Ранжирование поисковой выдачи с помощью LLM
+        Ranking search query with LLM
         '''
-        tokenized_query = self.tokenize_query(query)
-        results, scores = self.retriever.retrieve(tokenized_query, k=top_k, show_progress=False,)
-        source_names = []
-        snippets_list = list(self.snippets.items())
-        chosen_snippets = [results[0, i] for i in range(results.shape[1])]
-        source_texts = [snippets_list[idx][1] for idx in chosen_snippets]
-        source_names = [snippets_list[idx][0][0] for idx in chosen_snippets] # другой вид сохранения сниппетов! вроде поправил
-        probs = await self.client.filter_sources(true_name, source_texts)
-        ranking = [(prob[1], name) for name, prob in zip(source_names, probs)]
-        #print(source_texts)
-        #print(ranking)
+        if self.utils.retriever is None:
+            raise ValueError('BM25 has not been created!')
+
+        if self.utils.snippets is None:
+            raise ValueError('No snippets!')
+
+        self.build_cache()
+        
+        tokenized_query = self.utils.tokenize_query(query)
+        results, scores = self.utils.bm25.retrieve(
+            tokenized_query, 
+            k=top_k, 
+            show_progress=False
+        )
+        indices = result[0].tolist()
+        source_texts = [self.snippet_texts[i] for i in indices]
+        source_names = [self.snippet_keys[i].article_name for i in indices]
+        
+        probs = await self.client.filter_sources(true_article_name, source_texts)
+        ranking = [(probability, article_name) for article_name, (idx, probability) in zip(source_names, probs)]
         return ranking
 
-    def append_neighbors(self, chosen_snippet, neighbor_count=2):
+    def append_neighbors(self, chosen_snippet: SnippetKey, neighbor_count: int = 1):
         '''
-        Присоединение соседних сниппетов к конкретному сниппету
-        Количество соседей указывает на число добавляемых сниппетов слева и справа соответственно
+        Appending neighboring snippets to given snippet.
+        Neighbor count shows how much snippets to add on left and right side.
         '''
-        snippet_num = chosen_snippet[2]
-        same_snippets = [(sn[0][2], sn[1]) for sn in self.snippets.items() if sn[0][0] == chosen_snippet[0] and sn[0][1] == chosen_snippet[1]]
-        start_idx = snippet_num - neighbor_count
-        end_idx = snippet_num + neighbor_count
-        text = []
-        for s in same_snippets:
-            if s[0] >= start_idx and s[0] <= end_idx:
-                text.append(s[1])
-        combined_snippet = " ".join(txt for txt in text)
-        return combined_snippet
+        if self.utils.snippets is None:
+            raise ValueError('No snippets!')
+            
+        self.build_cache()
 
-    async def k_means_method(self, name, snippets_filtered, snippets_id, embeddings, neighbor_count, forced_cluster_num, clusters_centers, description_mode=0):
+        group_key = (chosen_snippet.article_name, chosen_snippet.source_id)
+        grouped = self.snippets_by_article_grouped(group_key)
+
+        target_id = chosen_snippet.snippet_id
+        start = target_id - neighbor_count
+        end = target_id + neighbor_count
+
+        texts = [text for snippet_id, text in grouped if start <= snippet_id <= end]
+
+        return " ".join(texts)
+
+    async def k_means_method(
+        self,
+        snippets_id: list[SnippetKey], 
+        embeddings: np.ndarray, 
+        neighbor_count: int, 
+        forced_cluster_num: int = 0, 
+        clusters_centers: np.ndarray, 
+        article_name: str, 
+        description_mode: int = 0
+    ):
         '''
-        Кластеризация документов для составления плана статьи
+        Documents clusterization for constructing an article outline
         '''
-        silhouette_avg = []
-        snippet_emb = {}
-        for i, sn_id in enumerate(snippets_id):
-            snippet_emb[sn_id] = embeddings[i]
+
+        snippet_to_embedding = {snippet_id: embedding for snippet_id, embedding in zip(snippets_id, embeddings)}
+
+        # chosing number of clusters
         if forced_cluster_num:
-            kluster_num = forced_cluster_num
-        elif not clusters_centers:
-            for num_clusters in list(range(2,20)):
-                kmeans = KMeans(n_clusters=num_clusters, random_state=42)
-                kmeans.fit_predict(embeddings)
-                score = silhouette_score(embeddings, kmeans.labels_)
-                silhouette_avg.append(score)
-            kluster_num = np.argmax(silhouette_avg)+2
-        if clusters_centers:
-            #print('clust with mega hint')
-            kmeans = KMeans(n_clusters=len(clusters_centers), init=clusters_centers, random_state=42)
+            k = forced_cluster_num
+        elif cluster_centers:
+            k = len(clusters_centers)
         else:
-            #print('no hint for you!')
-            kmeans = KMeans(n_clusters=kluster_num, random_state=42)
-        kmeans.fit(embeddings)
-        labels = kmeans.labels_
+            k = min(10, max(2, len(embeddings) // 10 or 2))
+
+        # chosing KMeans configuration
+        if clusters_centers:
+            init = np.vstack(clusters_centers)
+            kmeans = KMeans(n_clusters=k, init=init, n_init=1, random_state=42)
+        else:
+            kmeans = KMeans(n_clusters=k, random_state=42)
+
+        # obtaining cluster labels
+        labels = kmeans.fit_predict(embeddings)
+
+        # constructing clusters
         clusters = {}
         for label, snippet_id in zip(labels, snippets_id):
-            clusters.setdefault(label, []).append((snippet_id, snippet_emb[snippet_id]))
+            clusters.setdefault(label, []).append((snippet_id, snippet_to_embedding[snippet_id]))
+
         collected_snippets = {}
-        for label, snippet_id_and_emb in clusters.items():
-            cluster_emb = np.array([elem[1] for elem in snippet_id_and_emb])
-            if len(cluster_emb) <= 5:
-                chosen_snippets = [sn_id[0] for sn_id in snippet_id_and_emb]
+        for label, snippet_id_and_emb in clusters.items(): # for each cluster
+            cluster_emb = np.array([elem for _, elem in snippet_id_and_emb]) # collect its embeddings
+            if len(cluster_emb) <= 5: # return early if it does not have more then five snippets
+                chosen_snippets = [sn_id for sn_id, _ in snippet_id_and_emb]
             else:
-                cluster_center = cluster_emb.mean()
-                distances = [(np.linalg.norm(emb[1] - cluster_center), emb[0]) for emb in snippet_id_and_emb]
-                distances = sorted(distances)[:5]
-                chosen_snippets = [sn_id[1] for sn_id in distances]
-            sample_snippet = "\n\n".join([self.append_neighbors(chosen_snippet_id, neighbor_count) for chosen_snippet_id in chosen_snippets])
-            collected_snippets.setdefault(label, sample_snippet)
-        outline = await self.client.generate_outline(collected_snippets, name, description_mode)
+                cluster_center = cluster_emb.mean(axis=0) # cluster center
+                distances = np.linalg.norm(cluster_emb - cluster_center, axis=1) # distance to cluster center
+                top_idx = np.argsort(distances)[:5] # top 5 closest
+                chosen_snippets = [snippet_id_and_emb[i][0] for i in top_idx] # obtaining snippet ids of closest elements
+
+            # concatenating snippets in one text
+            sample_snippet = '\n\n'.join(
+                self.append_neighbors(chosen_snippet_id, neighbor_count) 
+                for chosen_snippet_id in chosen_snippets
+            )
+            collected_snippets[label] = sample_snippet
+
+        # generating outline
+        outline = await self.client.generate_outline(collected_snippets, article_name, description_mode)
         return outline
 
-    def get_header_embeddings(self, doc_embeddings, doc_available, source_positions):
-        """
-        doc_embeddings: dict {номер_документа: embedding}
-        doc_available: dict {id_ссылки: номер_документа}
-        source_positions: dict {id_ссылки: ((header_level, header_text), paragraph_number)}
+    def get_header_embeddings(
+        self, 
+        doc_embeddings: dict[int, np.ndarray], 
+        doc_available: dict[str, int], 
+        source_positions: dict[str, list[tuple[tuple[str, str], int]]]
+    ):
+        '''
+        doc_embeddings: dict {document_num: embedding}
+        doc_available: dict {ref_id: document_num}
+        source_positions: dict {ref_id: ((header_level, header_text), paragraph_number)}
     
-        Возвращает словарь вида {(header_level, header_text): embedding, ...} для заголовков h2, 
-        где embedding – эмбеддинг первого доступного документа в группе, 
-        охватывающей данный h2 и все подразделы до следующего h2.
-        """
+        Returns dictionary {(header_level, header_text): embedding, ...} for h2 headings, 
+        where embedding is an embedding for first available doc in the group for this h2
+        '''
+        
         header_to_embedding = {}
         current_header = None       
         current_links = []        
         
         for link_id, pos_lst in source_positions.items():
             (level, header_text), para_num = pos_lst[0]
-            #print(level, header_text[:5], para_num)
             if int(level[1]) == 2 or int(level[1]) == 1:
                 if current_header is not None and current_links:
                     emb = None
@@ -121,7 +197,6 @@ class WikiAgent(WikiUtils):
                     if emb is not None:
                         header_key = (current_header[0], current_header[1])
                         if current_header not in header_to_embedding:
-                            #print('Emb for head: ', current_header)
                             header_to_embedding[header_key] = emb
 
                 current_header = (level, header_text)
@@ -142,34 +217,60 @@ class WikiAgent(WikiUtils):
                 header_key = (current_header[0], current_header[1])
                 header_to_embedding[header_key] = emb
         return header_to_embedding
+        
+    async def create_outline(
+        self,  
+        neighbor_count: int = 0, 
+        forced_cluster_num=0, 
+        mode: bool = False, 
+        page=None, 
+        description_mode=0,
+        article_name: str = None
+    ):
+        '''
+        Outline generation using clusterization
+        '''
+        if self.utils.snippets is None:
+            raise ValueError('No snippets!')
 
-    async def create_outline(self, name, neighbor_count=0, forced_cluster_num=0, mode=0, page=None, description_mode=0):
-        '''
-        Генерация плана к статье посредством кластеризации документов и выделении в них ключевых тем
-        '''
-        name = re.sub(r'[<>:"/\\|?*]', '', name)
-        snippets_filtered = [sn[1] for sn in self.snippets.items() if sn[0][0] == name]
-        #print('found snippets: ', len(snippets_filtered))
-        snippets_id = [sn[0] for sn in self.snippets.items() if sn[0][0] == name]
-        embeddings = self.get_embeddings(name)
-        #print('emb len: ', len(embeddings))
+        safe_name = page.cleared_name if page else article_name
+
+        snippets_id = [
+            snippet_key
+            for snippet_key in self.utils.snippets.keys()
+            if snippet_key.article_name == safe_name
+        ]
+        
+        embeddings = self.get_embeddings(safe_name)
+
         clusters_centers = None
-        if mode:
+        if mode and page is not None:
             id_to_embedding = {}
-            for i, snippet_id in enumerate(snippets_id):
-                if snippet_id[1] not in id_to_embedding:
-                    id_to_embedding[snippet_id[1]] = embeddings[i]
-            #print('Count of emb ids: ', len(id_to_embedding))
+            for i, snippet_key in enumerate(snippets_id):
+                if snippet_id.source_id not in id_to_embedding:
+                    id_to_embedding[snippet_id.source_id] = embeddings[i]
+
             doc_num = {
-                ref_link: doc_id + 1 for doc_id, ref_link in enumerate(page.downloaded_links)
+                ref_link: doc_id + 1
+                for doc_id, ref_link in enumerate(page.downloaded_links)
             }
-            #print('Downloaded docs: ', doc_num)
-            header_to_embedding = self.get_header_embeddings(id_to_embedding, doc_num, page.references_positions)
+
+            header_to_embedding = self.get_header_embeddings(
+                id_to_embedding, 
+                doc_num, 
+                page.references_positions
+            )
             clusters_centers = list(header_to_embedding.values())
-            #print('Found hints: ', len(header_to_embedding))
-            #return
-            #print(list(header_to_embedding.keys())[0], ' ', len(list(header_to_embedding.values())[0]))
-        outline = await self.k_means_method(name, snippets_filtered, snippets_id, embeddings, neighbor_count, forced_cluster_num, clusters_centers, description_mode)
+
+        outline = await self.k_means_method(
+            name, 
+            snippets_id, 
+            embeddings, 
+            neighbor_count, 
+            forced_cluster_num, 
+            clusters_centers, 
+            description_mode
+        )
         return outline
 
     def group_snippets(self, selected_emb, texts_final):
@@ -179,61 +280,87 @@ class WikiAgent(WikiUtils):
         sim_matrix = selected_emb @ selected_emb.T
         mask = sim_matrix >= 0.8
         np.fill_diagonal(mask, 0)
+        
         graph = csr_matrix(mask)
-        n_components, labels = connected_components(csgraph=graph, directed=False, return_labels=True)
+        _, labels = connected_components(csgraph=graph, directed=False, return_labels=True)
+        
         groups = {}
         for idx, label in enumerate(labels):
             groups.setdefault(label, []).append(texts_final[idx])
+            
         return list(groups.values())
         
-    def filter_snippets(self, section, snips, page):
+    def filter_snippets(self, section: tuple[str, str], snippets: list[tuple[SnippetKey, str]], page):
         '''
-        Отбор сниппетов наиболее подходящих для написания текста секции
+        Selecting most relevant snippets to the given section
         '''
-        if not page.filtered_outline[section]:
+        if not page.filtered_outline.get(section):
             return None
 
-        # Отбор только тех сниппетов, что имеют большое сходство с текстом секции в статье
-        texts_only = [elem[1] for elem in snips] # тексты сниппетов к конкретной секции
-        emb_snips = self.encoder.encode(texts_only, normalize_embeddings=True, device=self.device)
-        q_emb = self.encoder.encode(page.filtered_outline[section], normalize_embeddings=True, device=self.device)
-        cosine_scores = emb_snips @ q_emb.T
-        new_ranked = [(sn, cos, emb) for sn, cos, emb in zip(snips, cosine_scores, emb_snips) if cos >= 0.5]
-        filtered_final = sorted(new_ranked, key=lambda x: (x[0][0][1], x[0][0][2])) # сортировка сниппетов по порядку их встречаемости в тексте 
-        selected_emb = np.array([elem[2] for elem in filtered_final])
-        texts_final = [elem[0][1] for elem in filtered_final]
-        
-        if len(texts_final) <= 1:
-            return [texts_final] if len(texts_final) == 1 else None
+        if self.encoder is None:
+            raise ValueError('No encoder!')
 
-        groups = self.group_snippets(selected_emb, texts_final) # группировка
+        # Only snippets that are similar to section text will be used
+        texts_only = [snippet_text for _, snippet_text in snippets]
+        
+        emb_snippets = self.encoder.encode(
+            texts_only, 
+            normalize_embeddings=True, 
+            device=self.device
+        )
+        q_emb = self.encoder.encode(
+            page.filtered_outline[section], 
+            normalize_embeddings=True, 
+            device=self.device
+        )
+        cosine_scores = (emb_snippets @ q_emb.T).ravel()
+        new_ranked = [
+            (snippet_info, emb) 
+            for snippet_info, cos, emb in zip(snippets, cosine_scores, emb_snippets) 
+            if cos >= 0.6
+        ]
+
+        if not new_ranked:
+            return None
+
+        def sort_key(elem):
+            key = elem[0][0] # SnippetKey
+            return key.source_id, key.snippet_id
+
+        filtered_final = sorted(new_ranked, key=sort_key) # sorting snippets in order they were in the text
+        selected_emb = np.array([emb for _, emb in filtered_final])
+        texts_final = [snippet_text for (_, snippet_text), _ in filtered_final]
+        
+        if len(texts_final) == 0:
+            return None
+            
+        if len(texts_final) == 1:
+            return [texts_final]
+
+        groups = self.group_snippets(selected_emb, texts_final) # grouping
 
         return groups
 
-    async def get_section(self, section, snips, page):
-        filtered_snippets = self.filter_snippets(section, snips, page)
+    async def get_section(self, section, snippets: list[tuple[SnippetKey, str]], page):
+        filtered_snippets = self.filter_snippets(section, snippets, page)
         if not filtered_snippets:
             return -1
-        #print('Generating groups')
+
         summarized_snippets = await self.client.summarize_groups(filtered_snippets)
-        #print('Number of grouped snippets: ', len(summarized_snippets))
-        #print('Generation section')
         generated_text = await self.client.generate_section(section, summarized_snippets, page.name)
-        #print('Generated for section (hr): ', section)
+
         return generated_text
 
     async def create_sections(self, page):
-        section_to_sn = self.section_to_snippets(page)
+        section_to_sn = self.utils.section_to_snippets(page)
+        
         sections = AsyncList()
-        secs = []
+        secstions_order = []
+        
         for section, snips_id in section_to_sn.items():
-            #print('Generating section: ', section)
             sections.append(self.get_section(section, snips_id, page))
-            secs.append(section)
-            #break
+            secstions_order.append(section)
+
         await sections.complete_couroutines(batch_size=4)
-        sections = await sections.to_list()
-        result = {}
-        for sn, txt in zip(secs, sections):
-            result[sn] = txt
-        return result
+        results = sections.to_list()
+        return dict(zip(sections_order, results))
