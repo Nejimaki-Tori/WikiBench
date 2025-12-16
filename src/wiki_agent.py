@@ -20,10 +20,10 @@ class WikiAgent:
         device=None, 
         encoder=None
     ):  
-        self.client = client
-        self.utils = utils
+        self.client = client # for LLM
+        self.utils = utils # for snippets, bm25 and embeddings
         self.device = device or self.utils.device
-        self.encoder = encoder or self.utils.device
+        self.encoder = encoder or self.utils.encoder
 
         self.snippet_keys = None
         self.snippet_texts = None
@@ -50,6 +50,8 @@ class WikiAgent:
 
         self.snippets_by_article_grouped = grouped
         self.is_cache_built = True
+
+    # --- RANKING BLOCK ---
     
     async def create_ranking(
         self, 
@@ -60,7 +62,7 @@ class WikiAgent:
         '''
         Ranking search query with LLM
         '''
-        if self.utils.retriever is None:
+        if self.utils.bm25 is None:
             raise ValueError('BM25 has not been created!')
 
         if self.utils.snippets is None:
@@ -74,13 +76,15 @@ class WikiAgent:
             k=top_k, 
             show_progress=False
         )
-        indices = result[0].tolist()
+        indices = results[0].tolist()
         source_texts = [self.snippet_texts[i] for i in indices]
         source_names = [self.snippet_keys[i].article_name for i in indices]
         
         probs = await self.client.filter_sources(true_article_name, source_texts)
-        ranking = [(probability, article_name) for article_name, (idx, probability) in zip(source_names, probs)]
+        ranking = [(probability, article_name) for article_name, probability in zip(source_names, probs)]
         return ranking
+
+    # --- OUTLINE BLOCK ---
 
     def append_neighbors(self, chosen_snippet: SnippetKey, neighbor_count: int = 1):
         '''
@@ -89,11 +93,14 @@ class WikiAgent:
         '''
         if self.utils.snippets is None:
             raise ValueError('No snippets!')
+
+        if neighbor_count == 0:
+            return self.utils.snippets[chosen_snippet]
             
         self.build_cache()
 
         group_key = (chosen_snippet.article_name, chosen_snippet.source_id)
-        grouped = self.snippets_by_article_grouped(group_key)
+        grouped = self.snippets_by_article_grouped[group_key]
 
         target_id = chosen_snippet.snippet_id
         start = target_id - neighbor_count
@@ -108,10 +115,10 @@ class WikiAgent:
         snippets_id: list[SnippetKey], 
         embeddings: np.ndarray, 
         neighbor_count: int, 
-        forced_cluster_num: int = 0, 
         clusters_centers: np.ndarray, 
         article_name: str, 
-        description_mode: int = 0
+        description_mode: bool = False,
+        forced_cluster_num: int = 0,
     ):
         '''
         Documents clusterization for constructing an article outline
@@ -122,7 +129,7 @@ class WikiAgent:
         # chosing number of clusters
         if forced_cluster_num:
             k = forced_cluster_num
-        elif cluster_centers:
+        elif clusters_centers:
             k = len(clusters_centers)
         else:
             k = min(10, max(2, len(embeddings) // 10 or 2))
@@ -144,7 +151,7 @@ class WikiAgent:
 
         collected_snippets = {}
         for label, snippet_id_and_emb in clusters.items(): # for each cluster
-            cluster_emb = np.array([elem for _, elem in snippet_id_and_emb]) # collect its embeddings
+            cluster_emb = np.array([elem for _, elem in snippet_id_and_emb]) # collect embeddings
             if len(cluster_emb) <= 5: # return early if it does not have more then five snippets
                 chosen_snippets = [sn_id for sn_id, _ in snippet_id_and_emb]
             else:
@@ -165,10 +172,11 @@ class WikiAgent:
         return outline
 
     def get_header_embeddings(
-        self, 
-        doc_embeddings: dict[int, np.ndarray], 
-        doc_available: dict[str, int], 
-        source_positions: dict[str, list[tuple[tuple[str, str], int]]]
+        self,
+        doc_embeddings: dict[int, np.ndarray],
+        doc_available: dict[str, int],
+        source_positions: dict[str, list[tuple[tuple[str, str], int]]],
+        group_levels = ('h1', 'h2'), # which header levels to save
     ):
         '''
         doc_embeddings: dict {document_num: embedding}
@@ -178,54 +186,59 @@ class WikiAgent:
         Returns dictionary {(header_level, header_text): embedding, ...} for h2 headings, 
         where embedding is an embedding for first available doc in the group for this h2
         '''
-        
-        header_to_embedding = {}
-        current_header = None       
-        current_links = []        
-        
-        for link_id, pos_lst in source_positions.items():
-            (level, header_text), para_num = pos_lst[0]
-            if int(level[1]) == 2 or int(level[1]) == 1:
-                if current_header is not None and current_links:
-                    emb = None
-                    for lid in current_links:
-                        if lid in doc_available:
-                            doc_num = doc_available[lid]
-                            if doc_num in doc_embeddings:
-                                emb = doc_embeddings[doc_num]
-                                break
-                    if emb is not None:
-                        header_key = (current_header[0], current_header[1])
-                        if current_header not in header_to_embedding:
-                            header_to_embedding[header_key] = emb
 
+        Header = tuple[str, str]  # (level, title)
+        Position = tuple[Header, int]  # ((level, title), paragraph_num)
+        
+        header_to_embedding: dict[Header, np.ndarray] = {}
+        current_header = None
+        current_links: list[str] = []
+    
+        def finalize_block() -> None:
+            nonlocal current_header, current_links
+            if current_header is None or not current_links:
+                return
+    
+            emb = None
+            for lid in current_links:
+                doc_num = doc_available.get(lid)
+                if doc_num is None:
+                    continue
+                emb = doc_embeddings.get(doc_num)
+                if emb is not None:
+                    break
+    
+            if emb is not None:
+                if current_header not in header_to_embedding:
+                    header_to_embedding[current_header] = emb
+    
+        # Going through sources in order
+        for link_id, positions in source_positions.items():
+            (level, header_text), para_num = positions[0]
+            
+            if level in group_levels:
+                # Finish previous block
+                finalize_block()
                 current_header = (level, header_text)
                 current_links = [link_id]
             else:
+                # Save current link if it is not from the next h2 block
                 if current_header is not None:
                     current_links.append(link_id)
-
-        if current_header is not None and current_links:
-            emb = None
-            for lid in current_links:
-                if lid in doc_available:
-                    doc_num = doc_available[lid]
-                    if doc_num in doc_embeddings:
-                        emb = doc_embeddings[doc_num]
-                        break
-            if emb is not None:
-                header_key = (current_header[0], current_header[1])
-                header_to_embedding[header_key] = emb
+    
+        # Last block
+        finalize_block()
+    
         return header_to_embedding
         
     async def create_outline(
         self,  
+        article_name: str = None,
+        page=None, 
         neighbor_count: int = 0, 
         forced_cluster_num=0, 
         mode: bool = False, 
-        page=None, 
-        description_mode=0,
-        article_name: str = None
+        description_mode: bool = False
     ):
         '''
         Outline generation using clusterization
@@ -241,19 +254,23 @@ class WikiAgent:
             if snippet_key.article_name == safe_name
         ]
         
-        embeddings = self.get_embeddings(safe_name)
+        embeddings = self.utils.get_embeddings(safe_name)
 
         clusters_centers = None
         if mode and page is not None:
             id_to_embedding = {}
             for i, snippet_key in enumerate(snippets_id):
-                if snippet_id.source_id not in id_to_embedding:
-                    id_to_embedding[snippet_id.source_id] = embeddings[i]
+                if snippet_key.source_id not in id_to_embedding:
+                    id_to_embedding[snippet_key.source_id] = embeddings[i]
 
             doc_num = {
                 ref_link: doc_id + 1
                 for doc_id, ref_link in enumerate(page.downloaded_links)
             }
+
+            if page.references_positions is None:
+                page.get_references()
+                page.get_reference_positions()
 
             header_to_embedding = self.get_header_embeddings(
                 id_to_embedding, 
@@ -263,15 +280,17 @@ class WikiAgent:
             clusters_centers = list(header_to_embedding.values())
 
         outline = await self.k_means_method(
-            name, 
-            snippets_id, 
-            embeddings, 
-            neighbor_count, 
-            forced_cluster_num, 
-            clusters_centers, 
-            description_mode
+            article_name=article_name, 
+            snippets_id=snippets_id, 
+            embeddings=embeddings, 
+            neighbor_count=neighbor_count, 
+            forced_cluster_num=forced_cluster_num, 
+            clusters_centers=clusters_centers, 
+            description_mode=description_mode
         )
         return outline
+
+    # --- SECTION BLOCK ---
 
     def group_snippets(self, selected_emb, texts_final):
         '''
@@ -343,6 +362,7 @@ class WikiAgent:
 
     async def get_section(self, section, snippets: list[tuple[SnippetKey, str]], page):
         filtered_snippets = self.filter_snippets(section, snippets, page)
+        
         if not filtered_snippets:
             return -1
 
@@ -350,6 +370,51 @@ class WikiAgent:
         generated_text = await self.client.generate_section(section, summarized_snippets, page.name)
 
         return generated_text
+
+    def section_to_references(self, page, doc_num):
+        '''Maps each section with corresponding reference id'''
+        downloaded_links = set(doc_num.keys())
+        ref_to_sections = {}
+        
+        for reference_id, positions in page.references_positions.items():
+            for section_info, *_ in positions:
+                ref_to_sections.setdefault(reference_id, []).append(section_info)
+
+        section_to_refs = page.invert_dict(ref_to_sections)
+        filtered_sections = {}
+        
+        for section_info, references in section_to_refs.items():
+            chosen_refs = list(set(references) & set(downloaded_links))
+            if chosen_refs:
+                filtered_sections[section_info] = chosen_refs
+                
+        return filtered_sections
+
+    def section_to_snippets(self, page):
+        '''
+        Maps each section with its corresponding snippets.
+        Returns dict: {(header, section_name): [(SnippetKey, snippet_text)]}
+        '''
+        if self.utils.snippets is None:
+            raise ValueError('Snippets have not been created!')
+            
+        doc_num = {
+                ref_link: doc_id + 1 for doc_id, ref_link in enumerate(page.downloaded_links)
+            }
+        section_to_refs = self.section_to_references(page, doc_num)
+        section_to_snippets = {}
+        for section, reference_links in section_to_refs.items():
+            collected_snippets = []
+            for reference_link in reference_links:
+                source_id = doc_num[reference_link]
+                for snippet_key, snippet_text in self.utils.snippets.items():
+                    if snippet_key.article_name == page.cleared_name and snippet_key.source_id == source_id:
+                        collected_snippets.append((snippet_key, snippet_text))
+
+            collected_snippets.sort(key=lambda item: (item[0].source_id, item[0].snippet_id))
+            section_to_snippets[section] = collected_snippets
+            
+        return section_to_snippets
 
     async def create_sections(self, page):
         section_to_sn = self.utils.section_to_snippets(page)

@@ -240,52 +240,134 @@ COMBINE_GROUP_PROMPT = """
 """
 
 class WikiGen:
-    def __init__(self, client, model_name=None):
+    def __init__(
+        self, 
+        client, 
+        is_think_mode_disabled: bool = True
+    ):
         self.client = client
-        self.thinking_pass = " /no_think" if model_name == 'Qwen3-235B-A22B' or model_name == 'RefalMachine/RuadaptQwen3-32B-Instruct-v2' else ""
+        self.thinking_pass = " /no_think" if is_think_mode_disabled else ""
 
     def extract_response(self, response):
         text = response.choices[0].message.content.strip() if response.choices else None
         return re.sub(r"<\/?think>", "", text).strip() if text else None
+
+    # --- Helper functions block ---
+    
+    async def complete_prompt_template(
+        self,
+        template: str,
+        *template_args,
+        max_tokens: int = 512,
+        logprobs=False,
+        is_extraction_needed: bool = True,
+        **template_kwargs
+    ):
+        '''Returns response from LLM. Uses given prompt and formats it with given arguments'''     
+        prompt = template.format(*template_args, **template_kwargs) + self.thinking_pass
+        result = await self.client.get_completion(prompt, max_tokens=max_tokens, logprobs=logprobs)
+        return self.extract_response(result) if is_extraction_needed else result
+
+    async def hierarchical_merge(
+        self,
+        items: list[str],
+        summarize_fn,
+        group_size: int = 5,
+        batch_size: int = 10
+    ):
+        '''Function that produces a hierarchical merge of the given list of texts'''
+        summaries = [s for s in items if s]
         
-    #-----------------------------ANNOTATIONS------------------------------------#
-    async def get_ref_subqueries(self, page, mode=0, reference_mode=1, name=None):
+        if not summaries:
+            return ''
+
+        while len(summaries) > 1:
+            groups = [
+                summaries[i : i + group_size]
+                for i in range(0, len(summaries), group_size)
+            ]
+
+            tasks = AsyncList()
+            for group in groups:
+                clean_group = [s for s in group if s]
+                if not clean_group:
+                    continue
+                    
+                tasks.append(summarize_fn(clean_group))
+
+            if not tasks:
+                break
+
+            await tasks.complete_couroutines(batch_size=batch_size)
+            new_summaries = await tasks.to_list()
+
+            summaries = [s for s in new_summaries if s]
+
+            if not summaries:
+                return ''
+
+        return summaries[0] if summaries else ''
+        
+    
+    # --- ANNOTATIONS BLOCK ---
+    
+    async def get_ref_subqueries(
+        self, 
+        is_in_english: bool = False, 
+        is_reference_mode: bool = True, 
+        article_name: str = '',
+        page = None
+    ):
         '''
-        Функция для получения эталонного плана статьи по данным заголовкам
+        Function for generating reference article description based on given h2 headers.
+        Can return both english and russian description.
         '''
-        if reference_mode:
+        if is_reference_mode:
             if not page or not page.outline:
                 print('Empty page!')
-                return
-            if mode == 0:
-                myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT
-            else:
+                return None
+                
+            if is_in_english:
                 myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT_ENG
-            headers = [header[1] for header in page.outline.keys() if header[0] == 'h2']
-            headers_formatted = "\n".join(f"- {h}" for h in headers)
-            myprompt = myprompt.format(article_title=page.name, headers=headers_formatted) + self.thinking_pass
-        else:
-            if mode == 0:
-                myprompt = REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT
             else:
+                myprompt = REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT          
+            headers_h2 = [header[1] for header in page.outline.keys() if header[0] == 'h2']
+            headers_h2_formatted = '\n'.join(f'- {h2}' for h2 in headers_h2)
+            
+            response = await self.complete_prompt_template(
+                myprompt,
+                page.name,
+                headers_h2_formatted
+            )
+        else:
+            if is_in_english:
                 myprompt = REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT_ENG
-            myprompt = myprompt.format(article_title=name) + self.thinking_pass
+            else:
+                myprompt = REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT
 
-        res = await self.client.get_completion(myprompt)
-        response = self.extract_response(res)
-        if not response:
-            print("Couldn't get the answer")
-            return
-        if reference_mode:
+            response = await self.complete_prompt_template(
+                myprompt,
+                article_name
+            )
+
+        if is_reference_mode:
             return (page.name, response)
         else:
             return response
 
     async def get_annotations(self, topR):
         annotations = AsyncList()
-        for name, _ in topR:
-            annotations.append(self.get_ref_subqueries(None, 0, 0, name))
-            annotations.append(self.get_ref_subqueries(None, 1, 0, name))
+        for article_name, _ in topR:
+            annotations.append(self.get_ref_subqueries(
+                is_in_english=False, 
+                is_reference_mode=False, 
+                article_name=article_name
+            ))
+            annotations.append(self.get_ref_subqueries(
+                is_in_english=True, 
+                is_reference_mode=False, 
+                article_name=article_name
+            ))
     
         await annotations.complete_couroutines(batch_size=40)
         annotations = await annotations.to_list()
@@ -296,61 +378,35 @@ class WikiGen:
             texts.append(new_text)
             
         return texts
-            
-    #--------------------------------------------OUTLINE-------------------------------------------------------#
-    async def get_cluster_description(self, name, cluster_text, description_mode=0, cluster_level_refine=False):
-        if description_mode:
-            myprompt = CLUSTER_DESCRIPTION_PROMPT.format(name, cluster_text) + self.thinking_pass
-        else:
-            myprompt = CLUSTER_OUTLINE_PROMPT.format(name, cluster_text) + self.thinking_pass
-            
-        res = await self.client.get_completion(myprompt)
-        response = self.extract_response(res)
+
         
-        if description_mode and response:
-            myprompt = OUTLINE_FROM_DESCRIPTION.format(name, response) + self.thinking_pass
-            res = await self.client.get_completion(myprompt)
-            response = self.extract_response(res)
-            
-            if cluster_level_refine and response:
-                myprompt = COMBINE_CLUSTER_PROMPT.format(name, response) + self.thinking_pass
-                res = await self.client.get_completion(myprompt)
-                response = self.extract_response(res)
+    # --- SOURCE RANKING BLOCK ---
+    
+    async def process_text(
+        self, 
+        snippet_text: str, 
+        article_name: str, 
+        positive_choice: str, 
+        negative_choice: str
+    ):
+        '''Returns the probability of wether the given snippet is relevant to the given article name'''
+        response = await self.complete_prompt_template(
+            RANKING_PROMPT,
+            article_name,
+            snippet_text,
+            positive_choice,
+            negative_choice,
+            max_tokens=5,
+            logprobs=True,
+            is_extraction_needed=False
+        )
 
-        if not response:
-            print("Couldn't get the answer!")
-        return response
-
-    async def generate_outline(self, clusters, name, description_mode=0):
-        cluster_outlines = AsyncList()
-        for label, sample_snippet in clusters.items():
-            cluster_outlines.append(self.get_cluster_description(name, sample_snippet, description_mode))
-        await cluster_outlines.complete_couroutines(batch_size=40)
-        cluster_outlines = await cluster_outlines.to_list()
-        mega_outline = "\n\n".join(f"{outline}" for outline in cluster_outlines)
-        #print('Length of generated outline: ', len(mega_outline))
-        myprompt =  COMBINE_OUTLINE_PROMPT.format(name, mega_outline) + self.thinking_pass
-        res = await self.client.get_completion(myprompt)
-        outline = self.extract_response(res)
-        if not outline:
-            print("Couldn't get the answer!")
-        return outline
-
-    #-----------------------------------------------RANKING------------------------------------------------#
-    async def process_text(self, i1: int, text: str, name: str, positive_choice: str, negative_choice: str):
-        """
-        Функция обрабатывает один сниппет:
-        - Формирует prompt и получает вероятности
-        - Возвращает (индекс, вероятность)
-        """
-        myprompt = RANKING_PROMPT.format(name, text, positive_choice, negative_choice) + self.thinking_pass
-        response = await self.client.get_probability(myprompt, rep_penalty=1.0, max_tokens=10)
         response = response.choices[0]
         probs = {positive_choice: [], negative_choice: []}
 
         for token_info in response.logprobs.content:
             for variant in token_info.top_logprobs:
-                key = variant.token.strip()
+                key = variant.token.strip().upper()
                 if key == positive_choice or key == negative_choice:
                     probs[key].append(math.exp(variant.logprob))
 
@@ -362,22 +418,18 @@ class WikiGen:
         else:
             prob_val = prob_pos
         
-        return (i1, prob_val)
+        return prob_val
         
     async def filter_sources(self, name, texts):
-        """
-        Функция проходится по всем текстам и возвращает список вероятностей:
-        - Возвращает [(индекс, вероятность)]
-        """
+        '''Returns the list of probs'''
         probs = AsyncList() 
 
         positive_choice = 'YES'
         negative_choice = 'NO'
         
-        for i1, text in enumerate(texts):
+        for text in texts:
             probs.append(
                 self.process_text(
-                    i1, 
                     text, 
                     name, 
                     positive_choice, 
@@ -387,126 +439,141 @@ class WikiGen:
 
         await probs.complete_couroutines(batch_size=40)
         final_probs = await probs.to_list()
-        final_probs = sorted(final_probs)
         return final_probs
-
-    #--------------------------------SECTIONS------------------------------------#
-    #async def get_first_description(self, name, section, snippet_text, pred_text):
-    #    if pred_text:
-    #        myprompt = COMBINE_DESCRIPTION_PROMPT.format(name, section[1], pred_text, snippet_text)
-    #    else:
-    #        myprompt = WRITE_DESCRIPTION_PROMPT.format(name, section[1], snippet_text)
-    #    res = await self.client.get_completion(myprompt)
-    #    if res.choices is not None:
-    #        response = res.choices[0].message.content.strip()
-    #        return response
-    #    else:
-    #        print("Couldn't get the answer")
-
-    #async def generate_section(self, section, batched_snippets, name):
-    #    pred_text = None
-    #    description = None
-    #    #print('batch count ', len(batched_snippets))
-    #    for snippets in batched_snippets:
-    #        #print('whaaaaaaaaa ', len(snippets))
-    #        #print(snippets[0])
-    #        snippet_text =  "\n\n".join(f"{snippet}" for snippet in snippets)
-    #        description = await self.get_first_description(name, section, snippet_text, pred_text)
-    #        #print('DRAFT DRAFT')
-    #        #print(description)
-    #        #print()
-    #        #print()
-    #        #print('-'*100)
-    #        pred_text = description
-    #    #print(description)
-    #    #print()
-    #    #print()
-    #    #print('-'*100)
-    #    return description
-
-    async def get_description(self, name, section, combined_text):
-        myprompt = SUMMARIZATION_PROMPT.format(name, section[1], combined_text) + self.thinking_pass
-        res = await self.client.get_completion(myprompt)
-        response = self.extract_response(res)
-        return response
-
-    async def generate_section(self, section, snippets, name):
-        summaries = snippets
-        while len(summaries) > 1:
-            groups = [summaries[i:i + 5] for i in range(0, len(summaries), 5)]
-            next_summaries = AsyncList()
-            for group in groups:
-                snippet_text = "\n".join(group)
-                next_summaries.append(self.get_description(name, section, snippet_text))
-
-            await next_summaries.complete_couroutines(batch_size=10)
-            summaries = await next_summaries.to_list()
-
-        return summaries[0]
-
-    #async def get_one_group(self, text, pred_text):
-    #    if pred_text:
-    #        myprompt = COMBINE_GROUP_PROMPT.format(pred_text, text)
-    #    else:
-    #        myprompt = WRITE_GROUP_PROMPT.format(text)
-    #    res = await self.client.get_completion(myprompt)
-    #    if res.choices is not None:
-    #        response = res.choices[0].message.content.strip()
-    #        return response
-    #    else:
-    #        print("Couldn't get the answer")
-    #        
-    #async def get_group_description(self, group):
-    #    if len(group) == 1:
-    #        return group[0]
-    #    batched_snippets = []
-    #    i = 0
-    #    while i < len(group):
-    #        batched_snippets.append(group[i:i+5])
-    #        i += 5
-    #    pred_summary = None
-    #    #print('group num ', len(group))
-    #    #print('group len ', len(group[0]))
-    #    #print('group text ', group[0][:10])
-    #    #print('groups batches ', len(batched_snippets))
-    #    for batch in batched_snippets:
-    #        batch_text = " ".join([text for text in batch])
-    #        group_description = await self.get_one_group(batch_text, pred_summary)
-    #        #print('one group ', group_description[:200])
-    #        pred_summary = group_description
-    #    #print('summed group ', len(group_description))
-    #    #print('-'*100)
-    #    #print()
-    #    return group_description
-
-    async def get_one_group(self, text):
-        myprompt = WRITE_GROUP_PROMPT.format(text) + self.thinking_pass
-        res = await self.client.get_completion(myprompt)
-        response = self.extract_response(res)
-        return response
         
-    async def get_group_description(self, group_text):
-        summaries = group_text
-        i = 0
-        while len(summaries) > 1:
-            groups = [summaries[i:i + 5] for i in range(0, len(summaries), 5)]
-            #print('Iteration number for groups: ', i)
-            #print('Number of groups for groups: ', len(groups))
-            i += 1
-            next_summaries = AsyncList()
-            for group in groups:
-                batched_text = "\n".join(group)
-                next_summaries.append(self.get_one_group(batched_text))
-            
-            await next_summaries.complete_couroutines(batch_size=5)
-            summaries = await next_summaries.to_list()
-            
-        return summaries[0] if summaries else ""
 
-    async def summarize_groups(self, groups):
+    # --- OUTLINE BLOCK ---
+    
+    async def get_cluster_description(
+        self, 
+        article_name: str, 
+        cluster_text: str, 
+        description_mode: bool = False, 
+        cluster_level_refine: bool = False
+    ):
+        '''Returns an outline for one cluster'''
+        
+        if not description_mode:
+            outline = await self.complete_prompt_template(
+                CLUSTER_OUTLINE_PROMPT,
+                article_name,
+                cluster_text
+            )
+
+            return outline
+
+        description = await self.complete_prompt_template(
+            CLUSTER_DESCRIPTION_PROMPT,
+            article_name,
+            cluster_text
+        )
+
+        outline = await self.complete_prompt_template(
+            OUTLINE_FROM_DESCRIPTION,
+            article_name,
+            description
+        )
+
+        if cluster_level_refine:
+            refined_cluster_description = await self.complete_prompt_template(
+                COMBINE_CLUSTER_PROMPT,
+                article_name,
+                outline
+            )
+
+            outline = refined_cluster_description
+
+        return outline
+
+    async def generate_outline(
+        self, 
+        clusters: dict, 
+        article_name: str, 
+        description_mode: bool = False
+    ):
+        '''Creates an outline, using combined outline for each text cluster'''
+        
+        cluster_outlines = AsyncList()
+        for label, sample_snippet in clusters.items():
+            cluster_outlines.append(
+                self.get_cluster_description(
+                    article_name, 
+                    sample_snippet, 
+                    description_mode
+                )
+            )
+            
+        await cluster_outlines.complete_couroutines(batch_size=40)
+        cluster_outlines = [o for o in await cluster_outlines.to_list() if o]
+        collected_outlines = "\n\n".join(cluster_outlines)
+        combined_outline = await self.complete_prompt_template(
+            COMBINE_OUTLINE_PROMPT,
+            article_name,
+            collected_outlines
+        )
+
+        return combined_outline
+
+
+    # --- SECTIONS BLOCK --- #
+
+    async def generate_section(
+        self, 
+        article_name: str, 
+        section: tuple[str, str], 
+        snippets: list[str],
+        group_size: int = 5
+    ):
+        '''Generates section using hierarchical merging'''
+        
+        async def summarize_group(group: list[str]):
+            '''Summarizes one given group of texts'''
+            combined_snippet_text = '\n'.join(group)
+            section_title = section[1]
+            return self.complete_prompt_template(
+                SUMMARIZATION_PROMPT, 
+                article_name, 
+                section_title, 
+                combined_snippet_text
+            )
+        
+        section_text = await self.hierarchical_merge(
+            snippets,
+            summarize_fn=summarize_group,
+            group_size=group_size,
+            batch_size=10,
+        )
+
+        return section_text
+
+    async def get_group_description(
+        self, 
+        group_texts: list[str]
+    ):
+        async def summarize_group(group: list[str]):
+            combined_group_text = '\n'.join(group)
+            return self.complete_prompt_template(
+                WRITE_GROUP_PROMPT,
+                combined_group_text
+            )
+
+        group_summary = await self.hierarchical_merge(
+            group_texts,
+            summarize_fn=summarize_group,
+            group_size=5,
+            batch_size=5
+        )
+
+        return group_summary
+
+    async def summarize_groups(
+        self, 
+        groups: list[list[str]] # List of groups; each group is a list of snippets
+    ):
         group_summary = AsyncList()
         for group in groups:
             group_summary.append(self.get_group_description(group))
+            
         await group_summary.complete_couroutines(batch_size=10)
         group_summary = await group_summary.to_list()
         return group_summary
