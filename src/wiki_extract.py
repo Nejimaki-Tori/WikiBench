@@ -265,27 +265,17 @@ class Extractor(WikiParser):
         article_filtered_text = '\n'.join(article_filtered_text_parts)
         self.filtered_text = article_filtered_text
         return article_filtered_text
+        
 
-    def html_ref(self):
-        '''Сохранение html-кода страниц источников'''
-        links_by_sources = {}
-        
-        for source_key, items in tqdm((self.links).items(), disable=not self.verbose):
-            extracted_links = []
-            for item1 in items:
-                item = item1[0]
-                if item.startswith("http"):
-                    try:
-                        response = requests.get(item, headers=self.headers, stream=True, allow_redirects=False, timeout=(3, 7))
-                        response.raise_for_status()
-                        text = response.text
-                        if text:
-                            if not extracted_links:
-                                extracted_links.append(text)
-                    except requests.RequestException as e:
-                        continue
-            if extracted_links:
-                links_by_sources[source_key] = extracted_links
-                
-        self.source_html_texts = links_by_sources
-        
+def get_downloaded_page(
+    article_name: str,
+    verbose=False
+):
+    '''Gets article from ruwiki and its main information (sources, reference positions, etc.)'''
+    if verbose:
+        print(f'Article name: {aritcle_name}')
+    page = Extractor(article_name=article_name, is_links_downloaded=True, verbose=verbose, is_downloaded=True, needs_saving=False)
+    page.get_references()
+    page.get_outline()
+    page.get_filtered_outline()
+    return page

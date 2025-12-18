@@ -148,7 +148,7 @@ class WikiUtils:
         for snippet_key in self.snippets.keys():
             counts[snippet_key.article_name] = counts.get(snippet_key.article_name, 0) + 1
             
-        return sorted(counts.items(), key = lambda x: x[0])
+        return counts
 
     def parse_source_id_from_filename(self, path) -> int:
         stem = path.stem  # 'source_1.txt' -> 'source_1'
@@ -270,128 +270,6 @@ class WikiUtils:
             pickle.dump(embeddings, f)
 
     # --- Article block ---
-    
-    def get_article(
-        self, 
-        name: str, 
-        retrieve_sources=False, 
-        is_downloaded=False, 
-        verbose=False, 
-        html=True, 
-        needs_saving=True
-    ):
-        '''Gets article from ruwiki and its main information (sources, reference positions, etc.)'''
-        if verbose:
-            print('Article name: ', name)
-        page = Extractor(name, is_downloaded, verbose, html, needs_saving)
-        page.get_references()
-        page.get_outline()
-        if retrieve_sources and not is_downloaded:
-            page.fast_extract()
-        if is_downloaded or retrieve_sources:
-            page.get_filtered_outline()
-        return page
-
-    def section_to_references(self, page, doc_num):
-        '''Maps each section with corresponding reference id'''
-        downloaded_links = set(doc_num.keys())
-        ref_to_sections = {}
-        
-        for reference_id, positions in page.references_positions.items():
-            for section_info, *_ in positions:
-                ref_to_sections.setdefault(reference_id, []).append(section_info)
-
-        section_to_refs = page.invert_dict(ref_to_sections)
-        filtered_sections = {}
-        
-        for section_info, references in section_to_refs.items():
-            chosen_refs = list(set(references) & set(downloaded_links))
-            if chosen_refs:
-                filtered_sections[section_info] = chosen_refs
-                
-        return filtered_sections
-
-    def section_to_snippets(self, page):
-        '''
-        Maps each section with its corresponding snippets.
-        Returns dict: {(header, section_name): [(SnippetKey, snippet_text)]}
-        '''
-        if self.snippets is None:
-            raise ValueError('Snippets have not been created!')
-            
-        doc_num = {
-                ref_link: doc_id + 1 for doc_id, ref_link in enumerate(page.downloaded_links)
-            }
-        section_to_refs = self.section_to_references(page, doc_num)
-        section_to_snippets = {}
-        for section, reference_links in section_to_refs.items():
-            collected_snippets = []
-            for reference_link in reference_links:
-                source_id = doc_num[reference_link]
-                for snippet_key, snippet_text in self.snippets.items():
-                    if snippet_key.article_name == page.cleared_name and snippet_key.source_id == source_id:
-                        collected_snippets.append((snippet_key, snippet_text))
-
-            collected_snippets.sort(key=lambda item: (item[0].source_id, item[0].snippet_id))
-            section_to_snippets[section] = collected_snippets
-            
-        return section_to_snippets
-
-    def get_header_embeddings(
-        self,
-        doc_embeddings: dict[int, np.ndarray],
-        doc_available: dict[str, int],
-        source_positions: dict[str, list[tuple[tuple[str, str], int]]],
-        group_levels = ('h1', 'h2'),
-        return_levels = ('h2'),
-    ):
-        '''
-        Maps section with its corresponding embedding of the source text snippet
-        '''
-        header_to_embedding = {}
-        current_header = None
-        current_links = []
-    
-        def finalize_block() -> None:
-            nonlocal current_header, current_links
-            if current_header is None or not current_links:
-                return
-    
-            emb = None
-            for lid in current_links:
-                doc_num = doc_available.get(lid)
-                if doc_num is None:
-                    continue
-                emb = doc_embeddings.get(doc_num)
-                if emb is not None:
-                    break
-    
-            if emb is not None and current_header[0] in return_levels:
-                if current_header not in header_to_embedding:
-                    header_to_embedding[current_header] = emb
-    
-        # Going through sources in theirs order
-        for link_id, positions in source_positions.items():
-            (level, header_text), para_num = positions[0]
-            
-            if level in group_levels:
-                # Finish previous block
-                finalize_block()
-                current_header = (level, header_text)
-                current_links = [link_id]
-            else:
-                # Вложенный заголовок — идёт в текущий блок
-                if current_header is not None:
-                    current_links.append(link_id)
-    
-        # Не забываем последний блок
-        finalize_block()
-    
-        return header_to_embedding
-
-
-
-
     
     def get_annotations_from_disk(self):
         texts = []
