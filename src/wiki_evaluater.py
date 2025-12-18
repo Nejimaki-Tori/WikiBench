@@ -13,10 +13,9 @@ from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction
 
 
 class WikiEvaluater():
-    def __init__(self, device=None, encoder=None, evaluater=None):
+    def __init__(self, device=None, encoder=None):
         self.device = device
         self.encoder = encoder
-        self.evaluater = evaluater
     
     def dcg(self, relevances, k):
         return sum(rel / math.log2(i+2) for i, rel in enumerate(relevances[:k]))

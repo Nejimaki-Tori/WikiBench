@@ -61,10 +61,15 @@ class LlmCompleter:
                              choices=None, rep_penalty=1.0,
                              regex_pattern=None, max_tokens=512,
                              use_beam_search=False, beam_width=1,
-                             answer_prefix=None):
+                             answer_prefix=None, logprobs=False, top_logprobs=10):
         assert sum(map(lambda x: x is not None, [choices, regex_pattern])) < 2, "Only one guided mode is allowed"
         msgs = self.prepare_messages(query, system, examples, answer_prefix)
         needs_generation_start = answer_prefix is None
+
+        lp_kwargs = (
+            {"logprobs": True, "top_logprobs": top_logprobs}
+            if logprobs else {}
+        )
 
         if use_beam_search:
             beam_width = max(3, beam_width)
@@ -82,7 +87,8 @@ class LlmCompleter:
                 "continue_final_message": not needs_generation_start,
                 "guided_regex": regex_pattern,
                 "use_beam_search": use_beam_search,
-            }
+            },
+            **lp_kwargs
         )
         response = await completion
         return response
