@@ -10,6 +10,7 @@ from sklearn.metrics import silhouette_score
 
 from wiki_utils import SnippetKey
 from openai_utils import AsyncList
+from wiki_extract import get_downloaded_page
 
 
 class WikiAgent:
@@ -55,9 +56,7 @@ class WikiAgent:
     
     async def create_ranking(
         self, 
-        query: str, 
-        top_k: int, 
-        true_article_name: str
+        article_name: str
     ):
         '''
         Ranking search query with LLM
@@ -70,6 +69,9 @@ class WikiAgent:
 
         self.build_cache()
         
+        query = await self.client.get_bm25_query(article_name)
+        top_k = self.utils.get_number_of_snippets()[article_name] * 3 # proportion is 1:2 (1 - relevant, 2 - irrelevant)
+        
         tokenized_query = self.utils.tokenize_query(query)
         results, scores = self.utils.bm25.retrieve(
             tokenized_query, 
@@ -80,7 +82,7 @@ class WikiAgent:
         source_texts = [self.snippet_texts[i] for i in indices]
         source_names = [self.snippet_keys[i].article_name for i in indices]
         
-        probs = await self.client.filter_sources(true_article_name, source_texts)
+        probs = await self.client.filter_sources(article_name, source_texts)
         ranking = [(probability, article_name) for article_name, probability in zip(source_names, probs)]
         return ranking
 
@@ -234,10 +236,9 @@ class WikiAgent:
     async def create_outline(
         self,  
         article_name: str = None,
-        page=None, 
         neighbor_count: int = 0, 
         forced_cluster_num=0, 
-        mode: bool = False, 
+        clusterization_with_hint: bool = False, 
         description_mode: bool = False
     ):
         '''
@@ -246,18 +247,17 @@ class WikiAgent:
         if self.utils.snippets is None:
             raise ValueError('No snippets!')
 
-        safe_name = page.cleared_name if page else article_name
-
         snippets_id = [
             snippet_key
             for snippet_key in self.utils.snippets.keys()
-            if snippet_key.article_name == safe_name
+            if snippet_key.article_name == article_name
         ]
         
-        embeddings = self.utils.get_embeddings(safe_name)
+        embeddings = self.utils.get_embeddings(article_name)
 
         clusters_centers = None
-        if mode and page is not None:
+        if clusterization_with_hint:
+            page = get_downloaded_page(article_name)
             id_to_embedding = {}
             for i, snippet_key in enumerate(snippets_id):
                 if snippet_key.source_id not in id_to_embedding:
@@ -267,10 +267,6 @@ class WikiAgent:
                 ref_link: doc_id + 1
                 for doc_id, ref_link in enumerate(page.downloaded_links)
             }
-
-            if page.references_positions is None:
-                page.get_references()
-                page.get_reference_positions()
 
             header_to_embedding = self.get_header_embeddings(
                 id_to_embedding, 
@@ -365,9 +361,13 @@ class WikiAgent:
         
         if not filtered_snippets:
             return -1
-
+            
         summarized_snippets = await self.client.summarize_groups(filtered_snippets)
-        generated_text = await self.client.generate_section(section, summarized_snippets, page.name)
+        generated_text = await self.client.generate_section(
+            article_name=page.name, 
+            section=section, 
+            snippets=summarized_snippets
+        )
 
         return generated_text
 
@@ -416,16 +416,15 @@ class WikiAgent:
             
         return section_to_snippets
 
-    async def create_sections(self, page):
-        section_to_sn = self.utils.section_to_snippets(page)
+    async def create_sections(self, article_name: str):
+        page = get_downloaded_page(article_name)
+        section_to_sn = self.section_to_snippets(page)
         
-        sections = AsyncList()
-        secstions_order = []
+        results = []
+        sections_order = []
         
         for section, snips_id in section_to_sn.items():
-            sections.append(self.get_section(section, snips_id, page))
-            secstions_order.append(section)
-
-        await sections.complete_couroutines(batch_size=4)
-        results = sections.to_list()
+            results.append(await self.get_section(section, snips_id, page))
+            sections_order.append(section)
+            
         return dict(zip(sections_order, results))

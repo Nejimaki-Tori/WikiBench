@@ -11,10 +11,10 @@ REFERENCE_SUBQUERIES_ALL_HEADERS_PROMPT = """
 
 Входные данные:
 
-Название статьи: {article_title}
+Название статьи: {}
 
 Заголовки параграфов:
-{headers}
+{}
 
 Ответ:
 "text": ""
@@ -28,10 +28,10 @@ Your response must be written in English.
 
 Input:
 
-Article title: {article_title}
+Article title: {}
 
 Section titles:
-{headers}
+{}
 
 Output:
 "text": ""
@@ -44,7 +44,7 @@ REFERENCE_SUBQUERIES_NO_HEADERS_PROMPT = """
 
 Ввод:
 
-Article title: "{article_title}",
+Article title: "{}",
 
 "text": ""
 """
@@ -57,7 +57,7 @@ Your response *must* be written in English.
 
 Input:
 
-Article title: {article_title}
+Article title: {}
 
 Output:
 "text": ""
@@ -277,7 +277,6 @@ class WikiGen:
     ):
         '''Function that produces a hierarchical merge of the given list of texts'''
         summaries = [s for s in items if s]
-        
         if not summaries:
             return ''
 
@@ -355,30 +354,22 @@ class WikiGen:
         else:
             return response
 
-    async def get_annotations(self, topR):
-        annotations = AsyncList()
-        for article_name, _ in topR:
-            annotations.append(self.get_ref_subqueries(
-                is_in_english=False, 
-                is_reference_mode=False, 
-                article_name=article_name
-            ))
-            annotations.append(self.get_ref_subqueries(
-                is_in_english=True, 
-                is_reference_mode=False, 
-                article_name=article_name
-            ))
-    
-        await annotations.complete_couroutines(batch_size=40)
-        annotations = await annotations.to_list()
-        new_texts = annotations
-        texts = []
-        for i in range(0, len(new_texts), 2):
-            new_text = new_texts[i] + '\n' + new_texts[i + 1]
-            texts.append(new_text)
-            
-        return texts
+    async def get_bm25_query(self, article_name: str):
+        russian_query = await self.get_ref_subqueries(
+            is_in_english=False,
+            is_reference_mode=False,
+            article_name=article_name
+        )
 
+        english_query = await self.get_ref_subqueries(
+            is_in_english=True,
+            is_reference_mode=False,
+            article_name=article_name
+        )
+
+        query = f'{russian_query}\n{english_query}'
+
+        return query
         
     # --- SOURCE RANKING BLOCK ---
     
@@ -452,7 +443,6 @@ class WikiGen:
         cluster_level_refine: bool = False
     ):
         '''Returns an outline for one cluster'''
-        
         if not description_mode:
             outline = await self.complete_prompt_template(
                 CLUSTER_OUTLINE_PROMPT,
@@ -461,13 +451,11 @@ class WikiGen:
             )
 
             return outline
-
         description = await self.complete_prompt_template(
             CLUSTER_DESCRIPTION_PROMPT,
             article_name,
             cluster_text
         )
-
         outline = await self.complete_prompt_template(
             OUTLINE_FROM_DESCRIPTION,
             article_name,
@@ -525,23 +513,21 @@ class WikiGen:
         group_size: int = 5
     ):
         '''Generates section using hierarchical merging'''
-        
-        async def summarize_group(group: list[str]):
-            '''Summarizes one given group of texts'''
+        async def summarize_for_one_section(group: list[str]):
+            #print(group)
             combined_snippet_text = '\n'.join(group)
             section_title = section[1]
-            return self.complete_prompt_template(
+            return await self.complete_prompt_template(
                 SUMMARIZATION_PROMPT, 
                 article_name, 
                 section_title, 
                 combined_snippet_text
             )
-        
         section_text = await self.hierarchical_merge(
             snippets,
-            summarize_fn=summarize_group,
+            summarize_fn=summarize_for_one_section,
             group_size=group_size,
-            batch_size=10,
+            batch_size=10
         )
 
         return section_text
@@ -550,18 +536,18 @@ class WikiGen:
         self, 
         group_texts: list[str]
     ):
-        async def summarize_group(group: list[str]):
+        async def summarize_for_one_group(group: list[str]):
             combined_group_text = '\n'.join(group)
-            return self.complete_prompt_template(
+            return await self.complete_prompt_template(
                 WRITE_GROUP_PROMPT,
                 combined_group_text
             )
 
         group_summary = await self.hierarchical_merge(
             group_texts,
-            summarize_fn=summarize_group,
+            summarize_fn=summarize_for_one_group,
             group_size=5,
-            batch_size=5
+            batch_size=30
         )
 
         return group_summary
@@ -570,10 +556,8 @@ class WikiGen:
         self, 
         groups: list[list[str]] # List of groups; each group is a list of snippets
     ):
-        group_summary = AsyncList()
+        group_summary = []
         for group in groups:
-            group_summary.append(self.get_group_description(group))
-            
-        await group_summary.complete_couroutines(batch_size=10)
-        group_summary = await group_summary.to_list()
+            group_summary.append(await self.get_group_description(group))
+
         return group_summary
