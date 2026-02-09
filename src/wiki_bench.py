@@ -5,6 +5,7 @@ from openai_utils import LlmCompleter, AsyncList
 from wiki_evaluater import WikiEvaluater
 from wiki_agent import WikiAgent
 from wiki_utils import WikiUtils
+from results_to_table import ranking_results, outline_results, section_results
 
 class WikiBench:
     '''Main class for runnig benchmark pipeline'''
@@ -93,17 +94,18 @@ class WikiBench:
         
     async def rank_query(self):  
         self.logger.info('Stage: rank_query started')
-        query_logger = []
+        self.query_logger = []
         for article_name in tqdm(self.article_names, desc='rank_query', unit='article'):
             try:
                 ranked_docs = await self.wiki_agent.create_ranking(article_name=article_name)
                 ndcg, pr_r_score = self.wiki_evaluater.rank_query(ranked_docs, article_name)
-                query_logger.append((ndcg, pr_r_score))
+                self.query_logger.append((ndcg, pr_r_score))
             except Exception:
                 self.logger.exception(f'rank_query failed for article={article_name}')
                 break
 
-        result = self.wiki_evaluater.mean_value(query_logger)
+        result = self.wiki_evaluater.mean_value(self.query_logger)
+        ranking_results(self.query_logger, self.article_names[:self.number_of_articles])
         self.logger.info(f'Final result for stage rank_query: {result}')
         return result
 
@@ -125,6 +127,7 @@ class WikiBench:
                 break
 
         result = self.wiki_evaluater.bootstrap(self.outline_logger, is_flat=True)
+        outline_results(self.outline_logger, self.article_names[:self.number_of_articles])
         self.logger.info(f'Final result for stage rank_outline: {self.format_bootstrap_results(result)}')
         return result
 
@@ -146,5 +149,6 @@ class WikiBench:
                 self.logger.exception(f'rank_sections failed for article={article_name}')
                 break
         result = self.wiki_evaluater.bootstrap(self.article_gen_logger, is_flat=False)
+        section_results(self.article_gen_logger, self.article_names[:self.number_of_articles])
         self.logger.info(f'Final result for stage rank_sections: {self.format_bootstrap_results(result)}')
         return result
