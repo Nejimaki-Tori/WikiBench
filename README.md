@@ -92,7 +92,7 @@ $ pip install -r requirements.txt
 
 ## Подготовка окружения
 
-Для того, чтобы воспользоваться бенчмарком, необходимо подготовить окружение. Для этого достаточно скачать файл ruwikibench_articles.json и запустить в той же директории скрипт manage_dataset_structure.py.
+Для того, чтобы воспользоваться бенчмарком, необходимо подготовить окружение. Для этого достаточно скачать файл ruwikibench_articles.json (https://huggingface.co/datasets/NejimakiTori/RuWikiBench) и запустить в той же директории скрипт manage_dataset_structure.py.
 Тогда json файл будет распакован в рабочие директории для бенчмарка.
 
 Далее необходимо запустить скрипт WikiBench.prepare_env().
