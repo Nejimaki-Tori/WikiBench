@@ -150,5 +150,7 @@ class WikiEvaluater():
             f_mean, f_min, f_max = self.calc([e for el in data for e in el[2]])
             r_mean, r_min, r_max = self.calc([e for el in data for e in el[2]])
             bf_mean, b_min, b_max = self.calc([e for el in data for e in el[2]])
-
-        return pr_mean, pr_min, pr_max, rec_mean, rec_min, rec_max, f_mean, f_min, f_max, r_mean, r_min, r_max, bf_mean, b_min, b_max
+        if is_flat:
+            return pr_mean, pr_min, pr_max, rec_mean, rec_min, rec_max, f_mean, f_min, f_max
+        else:
+            return pr_mean, pr_min, pr_max, rec_mean, rec_min, rec_max, f_mean, f_min, f_max, r_mean, r_min, r_max, bf_mean, b_min, b_max
