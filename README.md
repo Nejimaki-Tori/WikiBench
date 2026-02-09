@@ -123,7 +123,7 @@ encoder = SentenceTransformer('sergeyzh/BERTA').to(device)
 
 bench = WikiBench(
     key='KEY', # key=key
-    base='URL', # url=url
+    url='URL', # url=url
     model_name='ruadapt-qwen3-4b', # example model name
     device=device, # 'cuda'
     encoder=encoder, # 'sergeyzh/BERTA' - default
