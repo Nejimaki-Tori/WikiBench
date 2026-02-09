@@ -103,7 +103,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 - window_size - размер сниппетов (по умолчанию - 600)
 - overlap - перекрытие сниппетов (по умолчанию - 0)
 
-```
+```python
 # ДАННЫЙ КОД НУЖЕН ДЛЯ ПОДГОТОВКИ ОКРУЖЕНИЯ В ПЕРВЫЙ РАЗ
 
 import sys
