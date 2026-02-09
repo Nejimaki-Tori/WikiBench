@@ -15,6 +15,7 @@ class WikiBench:
         model_name: str, 
         device, 
         encoder,
+        number_of_articles: int = 100,
         log_level=logging.INFO
     ):
         self.model_name = model_name
@@ -23,8 +24,9 @@ class WikiBench:
         self.client = LlmCompleter(api_address=url, api_key=key, model_name=model_name)
         self.wiki_writer = WikiGen(self.client, self.model_name)
         self.logger = self._setup_logger(level=log_level)
+        self.number_of_articles = number_of_articles
         with open('small_articles_data.txt', 'r', encoding='utf-8') as file:
-            self.article_names = [x for x in file.read().split('\n') if x.strip()]
+            self.article_names = [x for x in file.read().split('\n') if x.strip()][:self.number_of_articles]
         self.wiki_utility = WikiUtils(device=self.device, encoder=self.encoder)
         self.wiki_agent = WikiAgent(utils=self.wiki_utility, client=self.wiki_writer)
         self.is_env_prepared = False
@@ -33,7 +35,7 @@ class WikiBench:
         self.outline_logger = []
         self.article_gen_logger = []
         self.stream_results = False
-        self.logger.info(f'WikiBench initialized: model={self.model_name}, articles={len(self.article_names}')
+        self.logger.info(f'WikiBench initialized: model={self.model_name}, articles={len(self.article_names)}')
 
     def _setup_logger(self, level):
         logger = logging.getLogger("wikibench")
@@ -51,10 +53,26 @@ class WikiBench:
         logger.propagate = False
         return logger
 
+    def format_bootstrap_results(self, result):
+        pr = (result[0], result[1], result[2])
+        rec = (result[3], result[4], result[5])
+        f = (result[6], result[7], result[8])
+
+        def format_one_result(metric, data):
+            mean, low, high = data
+            return f'{metric}={mean:.4f} [{low:.4f}; {high:.4f}]'
+
+        if len(result) > 9:
+            r = (result[9], result[10], result[11])
+            b = (result[12], result[13], result[14])
+            return " | ".join([format_one_result('P', pr), format_one_result('R', rec), format_one_result('F', f), format_one_result('Rouge', r), format_one_result('BLEU', b)])
+
+        return " | ".join([format_one_result('P', pr), format_one_result('R', rec), format_one_result('F', f)])
+
     def prepare_env(self, are_texts_ready=True, window_size=600, overlap=0):
         self.logger.info(f'Preparing env: are_texts_ready={are_texts_ready}, window={window_size}, overlap={overlap}')
         if self.is_env_prepared:
-            self.logger.info('Env already prepared. Loading created corpus')
+            self.logger.info('Env already prepared. Loading created corpus...')
             self.wiki_utility.load_created_corpus()
             self.wiki_agent.utils = self.wiki_utility
             return
@@ -64,10 +82,14 @@ class WikiBench:
             self.wiki_utility.create_article_corpus_from_scratch(article_bare_names=self.article_names)
 
         self.logger.info('Creating main corpus from scratch...')
-        self.wiki_utility.create_corpus_from_scratch(article_names=self.article_names, window_size=window_size, overlap=overlap)
-        self.wiki_agent.utils = self.wiki_utility
+        self.wiki_agent.utils.create_corpus_from_scratch(article_names=self.article_names, window_size=window_size, overlap=overlap)
         self.is_env_prepared = True
-        self.logger.info("Enviroment prepared!")
+        self.logger.info('Enviroment prepared!')
+
+    def load_enviroment(self):
+        self.logger.info('Loading enviroment...')
+        self.wiki_agent.utils.load_created_corpus()
+        self.logger.info('Enviroment loaded!')
         
     async def rank_query(self):  
         self.logger.info('Stage: rank_query started')
@@ -96,14 +118,14 @@ class WikiBench:
                     neighbor_count=neighbor_count, 
                     description_mode=description_mode
                 )
-                p, r, f = self.wiki_evaluater.rank_outline(outline, page)
+                p, r, f = self.wiki_evaluater.rank_outline(outline, article_name)
                 self.outline_logger.append((p, r, f))
             except Exception:
                 self.logger.exception(f'rank_outline failed for article={article_name}')
                 break
 
-        result = self.wiki_evaluater.calc(self.outline_logger, is_flat=True)
-        self.logger.info(f'Final result for stage rank_outline: {result}')
+        result = self.wiki_evaluater.bootstrap(self.outline_logger, is_flat=True)
+        self.logger.info(f'Final result for stage rank_outline: {self.format_bootstrap_results(result)}')
         return result
 
     async def rank_sections(self):
@@ -112,11 +134,17 @@ class WikiBench:
         for article_name in tqdm(self.article_names, desc='rank_sections', unit='article'):
             try:
                 sections = await self.wiki_agent.create_sections(article_name=article_name)
-                pr, rec, f1, qa_cov, qa_sim = self.wiki_evaluater.rank_sections(sections, page, self.model_name)
-                self.article_gen_logger.append((pr, rec, f1, qa_cov, qa_sim))
+                out = self.wiki_evaluater.rank_sections(sections, article_name)
+                self.article_gen_logger.append((
+                    out['precision'], 
+                    out['recall'], 
+                    out['f1'], 
+                    out['rouge_l'], 
+                    out['bleu']
+                ))
             except Exception:
                 self.logger.exception(f'rank_sections failed for article={article_name}')
                 break
-        result = self.wiki_evaluater.calc(self.article_gen_logger, is_flat=False)
-        self.logger.info(f'Final result for stage rank_sections: {result}')
+        result = self.wiki_evaluater.bootstrap(self.article_gen_logger, is_flat=False)
+        self.logger.info(f'Final result for stage rank_sections: {self.format_bootstrap_results(result)}')
         return result

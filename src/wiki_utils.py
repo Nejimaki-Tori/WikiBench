@@ -77,7 +77,8 @@ class WikiUtils:
         self.build_bm25_index(needs_saving=True)
 
         for article_name in article_names:
-            self.get_embeddings(article_cleared_name=article_name, force_recompute=True)        
+            article_cleared_name = re.sub(r'[<>:"/\\|?*]', '', article_name)
+            self.get_embeddings(article_cleared_name=article_cleared_name, force_recompute=True)        
 
     def load_created_corpus(self):
         '''Loads corpus if it is already prepared'''
@@ -242,20 +243,24 @@ class WikiUtils:
         if not force_recompute:
             return self.load_embeddings_from_disk(embeddings_path=embeddings_path)
                 
-        snippets_filtered = [
-            snippet_text
+        selected_snippets = [
+            (snippet_key, snippet_text)
             for snippet_key, snippet_text in self.snippets.items() 
             if snippet_key.article_name == article_cleared_name
         ]
         
+        ids = [sid for sid, _ in selected_snippets]
+        texts = [txt for _, txt in selected_snippets]
+    
         embeddings = self.encoder.encode(
-            snippets_filtered, 
+            texts, 
             device=self.device
         )
+        emb_by_id = {sid: embeddings[i] for i, sid in enumerate(ids)}
+        
+        self.save_embeddings_on_disk(emb_by_id, embeddings_path=embeddings_path)
 
-        self.save_embeddings_on_disk(embeddings, embeddings_path=embeddings_path)
-
-        return embeddings
+        return emb_by_id
 
     def load_embeddings_from_disk(self, embeddings_path):
         if type(embeddings_path) == str:

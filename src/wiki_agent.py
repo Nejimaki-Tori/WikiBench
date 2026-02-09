@@ -252,16 +252,17 @@ class WikiAgent:
             for snippet_key in self.utils.snippets.keys()
             if snippet_key.article_name == article_name
         ]
-        
-        embeddings = self.utils.get_embeddings(article_name)
+
+        cleared_article_name = re.sub(r'[<>:"/\\|?*]', '', article_name)
+        embeddings = self.utils.get_embeddings(cleared_article_name)
 
         clusters_centers = None
         if clusterization_with_hint:
             page = get_downloaded_page(article_name)
             id_to_embedding = {}
-            for i, snippet_key in enumerate(snippets_id):
+            for snippet_key in snippets_id:
                 if snippet_key.source_id not in id_to_embedding:
-                    id_to_embedding[snippet_key.source_id] = embeddings[i]
+                    id_to_embedding[snippet_key.source_id] = embeddings[snippet_key]
 
             doc_num = {
                 ref_link: doc_id + 1
@@ -275,10 +276,11 @@ class WikiAgent:
             )
             clusters_centers = list(header_to_embedding.values())
 
+        embeddings_values = np.array(list(embeddings.values()))
         outline = await self.k_means_method(
             article_name=article_name, 
             snippets_id=snippets_id, 
-            embeddings=embeddings, 
+            embeddings=embeddings_values, 
             neighbor_count=neighbor_count, 
             forced_cluster_num=forced_cluster_num, 
             clusters_centers=clusters_centers, 
@@ -316,22 +318,19 @@ class WikiAgent:
             raise ValueError('No encoder!')
 
         # Only snippets that are similar to section text will be used
-        texts_only = [snippet_text for _, snippet_text in snippets]
-        
-        emb_snippets = self.encoder.encode(
-            texts_only, 
-            normalize_embeddings=True, 
-            device=self.device
-        )
+        keys_only = [snippet_key for snippet_key, _ in snippets]
+        all_snippets_embs = self.utils.get_embeddings(article_cleared_name=page.cleared_name)
+        selected_snippets_embs = [all_snippets_embs[snippet_key] for snippet_key in keys_only]
+
         q_emb = self.encoder.encode(
             page.filtered_outline[section], 
             normalize_embeddings=True, 
             device=self.device
         )
-        cosine_scores = (emb_snippets @ q_emb.T).ravel()
+        cosine_scores = (selected_snippets_embs @ q_emb.T).ravel()
         new_ranked = [
             (snippet_info, emb) 
-            for snippet_info, cos, emb in zip(snippets, cosine_scores, emb_snippets) 
+            for snippet_info, cos, emb in zip(snippets, cosine_scores, selected_snippets_embs) 
             if cos >= 0.6
         ]
 
