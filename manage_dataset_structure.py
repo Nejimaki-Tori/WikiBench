@@ -74,8 +74,9 @@ def load_json():
 
 def decompose_json():
     # DECOMPOSES JSON TO NORMAL FILE SYSTEM
-    base_dir = Path('.')
-    json_file = base_dir / JSON_TITLE
+    base_dir = Path('Articles')
+    base_dir.mkdir(parents=True, exist_ok=True)
+    json_file = JSON_TITLE
 
     html_dir = base_dir / 'Html'
     sources_dir = base_dir / 'Sources'
@@ -114,7 +115,7 @@ def decompose_json():
 
         print(f'Reinstalled: {title}')
 
-    articles_list = base_dir / 'small_articles_data.txt'
+    articles_list = 'small_articles_data.txt'
     with open(articles_list, 'w', encoding='utf-8') as f:
         f.write('\n'.join(article_titles))
 
