@@ -120,10 +120,4 @@ def decompose_json():
         f.write('\n'.join(article_titles))
 
     print(f'\nDone!')
-
-
-#create_json()
-
-#load_json()
-
-decompose_json()
+    
