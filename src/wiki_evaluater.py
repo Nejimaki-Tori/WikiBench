@@ -131,8 +131,13 @@ class WikiEvaluater():
     def calc(self, data):
         data = np.array(data)
         data1 = (data,)
-        bootstrap_ci = bootstrap(data1, np.mean, confidence_level=0.95, n_resamples=len(data)-1)
-        
+        bootstrap_ci = bootstrap(
+            data1, 
+            np.mean, 
+            confidence_level=0.95, 
+            n_resamples=len(data)*100,
+            random_state=42
+        )
         dist = bootstrap_ci.bootstrap_distribution
         mean = np.quantile(dist, q=0.5)
         min = np.quantile(dist, q=0.025)
