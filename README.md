@@ -95,13 +95,39 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 ## Подготовка окружения
 
-Для того, чтобы воспользоваться бенчмарком, необходимо подготовить окружение. Для этого достаточно скачать файл ruwikibench_articles.json (https://huggingface.co/datasets/NejimakiTori/RuWikiBench) и запустить в той же директории скрипт manage_dataset_structure.py.
+Для того, чтобы воспользоваться бенчмарком, необходимо подготовить окружение. Для этого достаточно скачать файл ruwikibench_articles.json (https://huggingface.co/datasets/NejimakiTori/RuWikiBench) и запустить представленный ниже код.
 Тогда json файл будет распакован в рабочие директории для бенчмарка.
 
 Далее необходимо запустить скрипт WikiBench.prepare_env().
 - are_texts_ready - используется для скачивания html кода статей напрямую с Рувики. По умолчанию установлен на True, не нужно менять, если нет острой необходимости скачать все статьи заново.
 - window_size - размер сниппетов (по умолчанию - 600)
 - overlap - перекрытие сниппетов (по умолчанию - 0)
+
+```
+# ДАННЫЙ КОД НУЖЕН ДЛЯ ПОДГОТОВКИ ОКРУЖЕНИЯ В ПЕРВЫЙ РАЗ
+
+import sys
+import torch
+from manage_dataset_structure import decompose_json
+sys.path.append('src')
+from wiki_bench import WikiBench
+from sentence_transformers import SentenceTransformer
+
+decompose_json() # json -> файлы
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+encoder = SentenceTransformer('sergeyzh/BERTA').to(device)
+
+bench = WikiBench(
+    key='',
+    url='',
+    model_name='',
+    device=device,
+    encoder=encoder
+)
+
+bench.prepare_env()
+```
 
 В результате будет создан проиндексированный в bm25 корпус, а также словарь сниппетов и заранее посчитанные эмбеддинги.
 
