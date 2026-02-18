@@ -176,6 +176,3 @@ print("Score (outline):", score_outline)
 score_sections = await bench.rank_sections()
 print("Score (sections):", score_sections)
 ```
-
-Каждый метод возвращает кортеж с числовыми значениями метрик. Можно вызывать их отдельно или все сразу.
----
