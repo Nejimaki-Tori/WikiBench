@@ -234,7 +234,8 @@ class WikiBench:
                     model_output=sections,
                     runtime=runtime,
                     evaluation_result=out,
-                    evaluation_runtime=evaluation_runtime
+                    evaluation_runtime=evaluation_runtime,
+                    needs_serialization=True
                 )
                 self.append_to_json(record=record_sections, output_path=self.output_path)
                 
@@ -271,8 +272,12 @@ class WikiBench:
         model_output,
         runtime,
         evaluation_result,
-        evaluation_runtime
+        evaluation_runtime,
+        needs_serialization: bool = False
     ):
+        if needs_serialization:
+            model_output = [[[k, n], v] for (k, n), v in model_output.items()]
+            
         record = {
             'model_name': self.model_name,
             'article_name': article_name,
