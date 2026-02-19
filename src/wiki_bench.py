@@ -186,7 +186,7 @@ class WikiBench:
                     article_name=article_name,
                     model_output=outline,
                     runtime=runtime,
-                    evaluation_result={'precision': p, 'recall': r, 'f1': f},
+                    evaluation_result={'precision': float(p), 'recall': float(r), 'f1': float(f)},
                     evaluation_runtime=evaluation_runtime
                 )
                 self.append_to_json(record=record_outline, output_path=self.output_path)
@@ -206,10 +206,13 @@ class WikiBench:
                 
                 continue
 
-        result = self.wiki_evaluater.bootstrap(self.outline_logger, is_flat=True)
-        outline_results(self.outline_logger, processed_articles)
-        self.logger.info(f'Final result for stage rank_outline: {self.format_bootstrap_results(result)}')
-        return result
+        if len(self.outline_logger) >= 2:
+            result = self.wiki_evaluater.bootstrap(self.outline_logger, is_flat=True)
+            outline_results(self.outline_logger, processed_articles)
+            self.logger.info(f'Final result for stage rank_outline: {self.format_bootstrap_results(result)}')
+            return result
+
+        return self.outline_logger
 
     async def rank_sections(self):
         self.logger.info('Stage: rank_sections started')
@@ -233,7 +236,13 @@ class WikiBench:
                     article_name=article_name,
                     model_output=sections,
                     runtime=runtime,
-                    evaluation_result=out,
+                    evaluation_result={
+                        'p': list(map(float, out['precision'])), 
+                        'r': list(map(float, out['recall'])), 
+                        'f': list(map(float, out['f1'])), 
+                        'rl': list(map(float, out['rouge_l'])), 
+                        'bl': list(map(float, out['bleu']))
+                    },
                     evaluation_runtime=evaluation_runtime,
                     needs_serialization=True
                 )
@@ -259,12 +268,15 @@ class WikiBench:
                     break
                 
                 continue
-                
-        result = self.wiki_evaluater.bootstrap(self.article_gen_logger, is_flat=False)
-        section_results(self.article_gen_logger, processed_articles)
-        self.logger.info(f'Final result for stage rank_sections: {self.format_bootstrap_results(result)}')
-        return result
 
+        if len(self.article_gen_logger) >= 2: 
+            result = self.wiki_evaluater.bootstrap(self.article_gen_logger, is_flat=False)
+            section_results(self.article_gen_logger, processed_articles)
+            self.logger.info(f'Final result for stage rank_sections: {self.format_bootstrap_results(result)}')
+            return result
+            
+        return self.article_gen_logger
+        
     def create_record(
         self,
         evaluation_step: str,
