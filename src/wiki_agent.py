@@ -6,10 +6,8 @@ import numpy as np
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
 
 from wiki_utils import SnippetKey
-from openai_utils import AsyncList
 from wiki_extract import get_downloaded_page
 
 

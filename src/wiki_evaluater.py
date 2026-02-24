@@ -1,12 +1,7 @@
-import torch
-from sentence_transformers import SentenceTransformer
-from wiki_utils import WikiUtils
 from scipy.stats import bootstrap
 import math
-import os
 import razdel
 import numpy as np
-from openai_utils import AsyncList
 from rouge import Rouge
 from razdel import tokenize
 from nltk.translate.bleu_score import sentence_bleu, SmoothingFunction

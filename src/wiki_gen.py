@@ -243,10 +243,12 @@ class WikiGen:
     def __init__(
         self, 
         client, 
+        concurrency: int = 40,
         is_think_mode_disabled: bool = True
     ):
         self.client = client
-        self.thinking_pass = " /no_think" if is_think_mode_disabled else ""
+        self.concurrency = concurrency
+        self.thinking_pass = ' /no_think' if is_think_mode_disabled else ""
 
     def extract_response(self, response):
         text = response.choices[0].message.content.strip() if response.choices else None
@@ -428,7 +430,7 @@ class WikiGen:
                 )
             )
 
-        await probs.complete_couroutines(batch_size=40)
+        await probs.complete_couroutines(batch_size=self.concurrency)
         final_probs = await probs.to_list()
         return final_probs
         
@@ -491,7 +493,7 @@ class WikiGen:
                 )
             )
             
-        await cluster_outlines.complete_couroutines(batch_size=40)
+        await cluster_outlines.complete_couroutines(batch_size=self.concurrency)
         cluster_outlines = [o for o in await cluster_outlines.to_list() if o]
         collected_outlines = "\n\n".join(cluster_outlines)
         combined_outline = await self.complete_prompt_template(
@@ -514,7 +516,6 @@ class WikiGen:
     ):
         '''Generates section using hierarchical merging'''
         async def summarize_for_one_section(group: list[str]):
-            #print(group)
             combined_snippet_text = '\n'.join(group)
             section_title = section[1]
             return await self.complete_prompt_template(
@@ -527,7 +528,7 @@ class WikiGen:
             snippets,
             summarize_fn=summarize_for_one_section,
             group_size=group_size,
-            batch_size=10
+            batch_size=self.concurrency
         )
 
         return section_text
@@ -547,7 +548,7 @@ class WikiGen:
             group_texts,
             summarize_fn=summarize_for_one_group,
             group_size=5,
-            batch_size=30
+            batch_size=self.concurrency
         )
 
         return group_summary

@@ -26,25 +26,44 @@ class WikiBench:
         device, 
         encoder,
         number_of_articles: int = 100,
-        main_path: str = 'results',
+        concurrency: int = 40,
+        output_dir: str = 'results',
         errors_path: str = 'errors',
+        log_file: str = 'run.log',
         needs_to_stop_on_error: bool = False,
+        is_think_mode_disabled: bool = True,
+        log_to_console: bool = True,
+        log_mode: str = 'w',
         log_level=logging.INFO
     ):
-        self.logger = self._setup_logger(level=log_level)
-        
+
         self.model_name = model_name
+        self.model_safe_name = self.model_name.replace('/', '_').replace(' ', '_')
+        self.is_think_mode_disabled = is_think_mode_disabled
+
+        self.output_path = repo_root / output_dir / self.model_safe_name
+        self.output_path.mkdir(parents=True, exist_ok=True)
+        self.parent_output_path = self.output_path
+        self.output_path = self.output_path / 'benchmark_results.jsonl'
+        
+        self.logger = self.setup_logger(
+            level=log_level, 
+            log_file=log_file, 
+            log_to_console=log_to_console, 
+            log_mode=log_mode
+        )
+        
         self.device = device
         self.encoder = encoder
         self.number_of_articles = number_of_articles
+        self.concurrency = concurrency
         
         self.article_list_path = repo_root / 'small_articles_data.txt'
-
         with self.article_list_path.open('r', encoding='utf-8') as file:
             self.article_names = [x for x in file.read().split('\n') if x.strip()][:self.number_of_articles]
 
         self.client = LlmCompleter(api_address=url, api_key=key, model_name=model_name)
-        self.wiki_writer = WikiGen(self.client, self.model_name)
+        self.wiki_writer = WikiGen(client=self.client, concurrency=self.concurrency, is_think_mode_disabled=is_think_mode_disabled)
         self.wiki_utility = WikiUtils(device=self.device, encoder=self.encoder, repo_root=repo_root)
         self.wiki_agent = WikiAgent(utils=self.wiki_utility, client=self.wiki_writer)
         self.is_env_prepared = False
@@ -54,10 +73,6 @@ class WikiBench:
         self.outline_logger = []
         self.article_gen_logger = []
         
-        self.output_path = Path(main_path) / Path(self.model_name)
-        self.output_path.mkdir(parents=True, exist_ok=True)
-        self.output_path = self.output_path / 'benchmark_results.jsonl'
-        
         self.errors_path = Path(errors_path)
         self.errors_path.mkdir(parents=True, exist_ok=True)
         self.errors_path = self.errors_path / f'{self.model_name}.jsonl'
@@ -65,18 +80,28 @@ class WikiBench:
         
         self.logger.info(f'WikiBench initialized: model={self.model_name}, articles={len(self.article_names)}')
 
-    def _setup_logger(self, level):
-        logger = logging.getLogger("wikibench")
+    def setup_logger(self, level, log_file=None, log_to_console: bool = True, log_mode: str = 'w'):
+        logger = logging.getLogger(f'wikibench.{self.model_safe_name}')
         logger.setLevel(level)
 
-        if not logger.handlers:
-            handler = logging.StreamHandler()
-            fmt = logging.Formatter(
-                fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-                datefmt="%H:%M:%S",
-            )
-            handler.setFormatter(fmt)
-            logger.addHandler(handler)
+        logger.handlers.clear()
+
+        fmt = logging.Formatter(
+            fmt='%(asctime)s | %(levelname)s | %(name)s | %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+        )
+
+        if log_to_console:
+            sh = logging.StreamHandler()
+            sh.setFormatter(fmt)
+            logger.addHandler(sh)
+
+        if log_file:
+            log_path = self.parent_output_path / log_file
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            fh = logging.FileHandler(log_path, mode=log_mode, encoding='utf-8')
+            fh.setFormatter(fmt)
+            logger.addHandler(fh)
 
         logger.propagate = False
         return logger
@@ -148,6 +173,7 @@ class WikiBench:
 
                 processed_articles.append(article_name)
                 self.query_logger.append((ndcg, pr_r_score))
+                self.logger.info(f'Article: {article_name} | NDCG: {ndcg} | R-Precision: {pr_r_score} | Runtime: {runtime}')
             except Exception as e:
                 self.logger.exception(f'rank_query failed for article={article_name}')
                 error_record = self.create_error_record(
@@ -200,6 +226,8 @@ class WikiBench:
 
                 processed_articles.append(article_name)
                 self.outline_logger.append((p, r, f))
+
+                self.logger.info(f'Article: {article_name} | Precision: {p} | Recall: {r} | F1: {f} | Runtime: {runtime}')
             except Exception as e:
                 self.logger.exception(f'rank_outline failed for article={article_name}')
                 error_record = self.create_error_record(
@@ -263,6 +291,8 @@ class WikiBench:
                     out['bleu']
                 ))
                 processed_articles.append(article_name)
+
+                self.logger.info(f'Article: {article_name} | Results: {out} | Runtime: {runtime}')
             except Exception as e:
                 self.logger.exception(f'rank_sections failed for article={article_name}')
                 error_record = self.create_error_record(
