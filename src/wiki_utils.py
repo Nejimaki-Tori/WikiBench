@@ -30,14 +30,15 @@ class WikiUtils:
         self, 
         device=None, 
         encoder=None,
+        repo_root=None,
         root_dir: str = 'Articles', # main folder for articles
         util_dir: str = 'Utils' # main folder for utility inforamtion (snippets, embeddings, etc.)
     ):
         self.device = device
         self.encoder = encoder
         
-        self.root_dir = Path(root_dir)
-        self.util_dir = Path(util_dir)
+        self.root_dir = repo_root / Path(root_dir)
+        self.util_dir = repo_root / Path(util_dir)
         
         self.bm_dir = self.util_dir / 'bm25_index'
         self.bm_dir.mkdir(parents=True, exist_ok=True)

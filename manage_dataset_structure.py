@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 import re
 
+repo_root = Path(__file__).resolve().parent
 JSON_TITLE = 'ruwikibench_articles.json'
 
 def create_json():
@@ -74,9 +75,9 @@ def load_json():
 
 def decompose_json():
     # DECOMPOSES JSON TO NORMAL FILE SYSTEM
-    base_dir = Path('Articles')
+    base_dir = repo_root / 'Articles'
     base_dir.mkdir(parents=True, exist_ok=True)
-    json_file = JSON_TITLE
+    json_file = repo_root / JSON_TITLE
 
     html_dir = base_dir / 'Html'
     sources_dir = base_dir / 'Sources'
@@ -115,8 +116,8 @@ def decompose_json():
 
         print(f'Reinstalled: {title}')
 
-    articles_list = 'small_articles_data.txt'
-    with open(articles_list, 'w', encoding='utf-8') as f:
+    articles_list = repo_root / 'small_articles_data.txt'
+    with articles_list.open('w', encoding='utf-8') as f:
         f.write('\n'.join(article_titles))
 
     print(f'\nDone!')

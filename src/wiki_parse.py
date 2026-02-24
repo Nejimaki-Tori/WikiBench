@@ -12,6 +12,11 @@ import base64
 import urllib.parse
 
 
+try:
+    repo_root = Path(__file__).resolve().parents[1]
+except NameError:
+    repo_root = Path.cwd().resolve()
+    
 class WikiParser:
     """
     Class for parsing HTML pages from RuWiki
@@ -26,11 +31,13 @@ class WikiParser:
     ) -> None:
         self.name = article_name
         self.cleared_name = re.sub(r'[<>:"/\\|?*]', '', article_name)
-        self.link = ('https://ru.ruwiki.ru/wiki/' + self.name).replace(" ", "_")
-        self.main_dir = Path(main_dir)
+        self.link = ('https://ru.ruwiki.ru/wiki/' + self.name).replace(' ', '_')
+        
+        self.main_dir = Path(repo_root) / main_dir
         self.main_dir.mkdir(exist_ok=True)
         self.html_path = self.main_dir / 'Html'
         self.html_path.mkdir(parents=True, exist_ok=True)
+        
         self.verbose = verbose
         self.html_text = ''
         
@@ -43,13 +50,11 @@ class WikiParser:
             
         self.parser = BeautifulSoup(self.html_text, 'html.parser')
         self.outline = None
-        self.text = ""
+        self.text = ''
         self.links = None
 
     def download_article(self, needs_saving: bool = True) -> str:
-        '''
-        Function for downloading HTML from RuWiki
-        '''
+        '''Function for downloading HTML from RuWiki'''
         max_attempts = 5
         headers = {
             "User-Agent": ( 

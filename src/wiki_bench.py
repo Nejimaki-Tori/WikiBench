@@ -11,6 +11,11 @@ import time
 import json
 
 
+try:
+    repo_root = Path(__file__).resolve().parents[1]   # .../WikiBench
+except:
+    repo_root = Path.cwd().resolve()
+
 class WikiBench:
     '''Main class for runnig benchmark pipeline'''
     def __init__(
@@ -33,12 +38,14 @@ class WikiBench:
         self.encoder = encoder
         self.number_of_articles = number_of_articles
         
-        with open('small_articles_data.txt', 'r', encoding='utf-8') as file:
+        self.article_list_path = repo_root / 'small_articles_data.txt'
+
+        with self.article_list_path.open('r', encoding='utf-8') as file:
             self.article_names = [x for x in file.read().split('\n') if x.strip()][:self.number_of_articles]
 
         self.client = LlmCompleter(api_address=url, api_key=key, model_name=model_name)
         self.wiki_writer = WikiGen(self.client, self.model_name)
-        self.wiki_utility = WikiUtils(device=self.device, encoder=self.encoder)
+        self.wiki_utility = WikiUtils(device=self.device, encoder=self.encoder, repo_root=repo_root)
         self.wiki_agent = WikiAgent(utils=self.wiki_utility, client=self.wiki_writer)
         self.is_env_prepared = False
         self.wiki_evaluater = WikiEvaluater(self.wiki_agent.device, self.wiki_agent.encoder)

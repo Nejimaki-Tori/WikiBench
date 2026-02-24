@@ -308,9 +308,7 @@ class WikiAgent:
         return list(groups.values())
         
     def filter_snippets(self, section: tuple[str, str], snippets: list[tuple[SnippetKey, str]], page):
-        '''
-        Selecting most relevant snippets to the given section
-        '''
+        '''Selecting most relevant snippets to the given section'''
         if not page.filtered_outline.get(section):
             return None
 
