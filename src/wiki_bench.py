@@ -23,12 +23,13 @@ class WikiBench:
         url: str, 
         key: str, 
         model_name: str, 
+        model_safe_name: str,
         device, 
         encoder,
         number_of_articles: int = 100,
         concurrency: int = 40,
         output_dir: str = 'results',
-        errors_path: str = 'errors',
+        errors_file: str = 'errors.jsonl',
         log_file: str = 'run.log',
         needs_to_stop_on_error: bool = False,
         is_think_mode_disabled: bool = True,
@@ -38,7 +39,7 @@ class WikiBench:
     ):
 
         self.model_name = model_name
-        self.model_safe_name = self.model_name.replace('/', '_').replace(' ', '_')
+        self.model_safe_name = model_safe_name
         self.is_think_mode_disabled = is_think_mode_disabled
 
         self.output_path = repo_root / output_dir / self.model_safe_name
@@ -73,9 +74,7 @@ class WikiBench:
         self.outline_logger = []
         self.article_gen_logger = []
         
-        self.errors_path = Path(errors_path)
-        self.errors_path.mkdir(parents=True, exist_ok=True)
-        self.errors_path = self.errors_path / f'{self.model_name}.jsonl'
+        self.errors_path = self.parent_output_path / errors_file
         self.needs_to_stop_on_error = needs_to_stop_on_error
         
         self.logger.info(f'WikiBench initialized: model={self.model_name}, articles={len(self.article_names)}')
@@ -173,7 +172,6 @@ class WikiBench:
 
                 processed_articles.append(article_name)
                 self.query_logger.append((ndcg, pr_r_score))
-                self.logger.info(f'Article: {article_name} | NDCG: {ndcg} | R-Precision: {pr_r_score} | Runtime: {runtime}')
             except Exception as e:
                 self.logger.exception(f'rank_query failed for article={article_name}')
                 error_record = self.create_error_record(
@@ -192,7 +190,7 @@ class WikiBench:
         self.logger.info(f'Final result for stage rank_query: {result}')
         return result
 
-    async def rank_outline(self, neighbor_count=0, description_mode=0, clusterization_with_hint: bool = True):
+    async def rank_outline(self, neighbor_count: int = 0, description_mode: bool = True, clusterization_with_hint: bool = True):
         self.logger.info(f'Stage: rank_outline started: neighbor_count={neighbor_count}, description_mode={description_mode}, clusterization_with_hint={clusterization_with_hint}')
         
         self.outline_logger = []
@@ -226,8 +224,6 @@ class WikiBench:
 
                 processed_articles.append(article_name)
                 self.outline_logger.append((p, r, f))
-
-                self.logger.info(f'Article: {article_name} | Precision: {p} | Recall: {r} | F1: {f} | Runtime: {runtime}')
             except Exception as e:
                 self.logger.exception(f'rank_outline failed for article={article_name}')
                 error_record = self.create_error_record(
@@ -291,8 +287,6 @@ class WikiBench:
                     out['bleu']
                 ))
                 processed_articles.append(article_name)
-
-                self.logger.info(f'Article: {article_name} | Results: {out} | Runtime: {runtime}')
             except Exception as e:
                 self.logger.exception(f'rank_sections failed for article={article_name}')
                 error_record = self.create_error_record(
@@ -311,6 +305,8 @@ class WikiBench:
             section_results(self.article_gen_logger, processed_articles)
             self.logger.info(f'Final result for stage rank_sections: {self.format_bootstrap_results(result)}')
             return result
+        else:
+            self.logger.info(f'Final result for stage rank_sections: {result}')
             
         return self.article_gen_logger
         
