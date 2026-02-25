@@ -6,7 +6,6 @@ import re
 import pickle
 from pymorphy3 import MorphAnalyzer
 from pathlib import Path
-from wiki_extract import Extractor
 from dataclasses import dataclass
 
 
@@ -59,11 +58,6 @@ class WikiUtils:
         self.snippets = None
 
     # --- Corpus managment block ---
-    
-    def create_article_corpus_from_scratch(self, article_bare_names: list[str] = None):
-        '''Downloads all articles and their sources'''
-        for article_name in article_bare_names: # article names are not cleared from special symbols
-            self.get_article(article_name, retrieve_sources=True, verbose=True)
 
     def create_corpus_from_scratch(self, article_names: list[str] = None, window_size: int = 600, overlap: int = 0):
         '''Creates corpus of snippets, bm25 and precomputed embeddings'''

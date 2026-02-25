@@ -5,7 +5,6 @@ from openai_utils import LlmCompleter, AsyncList
 from wiki_evaluater import WikiEvaluater
 from wiki_agent import WikiAgent
 from wiki_utils import WikiUtils
-from results_to_table import ranking_results, outline_results, section_results
 from pathlib import Path
 import time
 import json
@@ -121,17 +120,15 @@ class WikiBench:
 
         return ' | '.join([format_one_result('P', pr), format_one_result('R', rec), format_one_result('F', f)])
 
-    def prepare_env(self, are_texts_ready=True, window_size=600, overlap=0):
-        self.logger.info(f'Preparing env: are_texts_ready={are_texts_ready}, window={window_size}, overlap={overlap}')
+    def prepare_env(self, window_size=600, overlap=0):
+        self.logger.info(f'Preparing env (snippets, bm25, embeddings): window={window_size}, overlap={overlap}')
         if self.is_env_prepared:
             self.logger.info('Env already prepared. Loading created corpus...')
             self.wiki_utility.load_created_corpus()
             self.wiki_agent.utils = self.wiki_utility
             return
-            
-        if not are_texts_ready:
-            self.logger.info('Creating article corpus from scratch...')
-            self.wiki_utility.create_article_corpus_from_scratch(article_bare_names=self.article_names)
+
+        self.logger.info('Downloading dataset...')
 
         self.logger.info('Creating main corpus from scratch...')
         self.wiki_agent.utils.create_corpus_from_scratch(article_names=self.article_names, window_size=window_size, overlap=overlap)
@@ -186,7 +183,6 @@ class WikiBench:
                 continue
 
         result = self.wiki_evaluater.mean_value(self.query_logger)
-        ranking_results(self.query_logger, processed_articles)
         self.logger.info(f'Final result for stage rank_query: {result}')
         return result
 
@@ -239,7 +235,6 @@ class WikiBench:
 
         if len(self.outline_logger) >= 2:
             result = self.wiki_evaluater.bootstrap(self.outline_logger, is_flat=True)
-            outline_results(self.outline_logger, processed_articles)
             self.logger.info(f'Final result for stage rank_outline: {self.format_bootstrap_results(result)}')
             return result
 
@@ -302,7 +297,6 @@ class WikiBench:
 
         if len(self.article_gen_logger) >= 2: 
             result = self.wiki_evaluater.bootstrap(self.article_gen_logger, is_flat=False)
-            section_results(self.article_gen_logger, processed_articles)
             self.logger.info(f'Final result for stage rank_sections: {self.format_bootstrap_results(result)}')
             return result
         else:

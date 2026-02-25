@@ -1,4 +1,5 @@
 import sys
+import csv
 import json
 import torch
 import asyncio
@@ -55,7 +56,7 @@ def pack_outline_metrics(result: tuple[tuple[...], tuple[...], tuple[...]]):
             'recall': {
                 'mean': float(result[3]),
                 'ci_low': float(result[4]),
-                "ci_high": float(result[5]),
+                'ci_high': float(result[5]),
             },
             'f1': {
                 'mean': float(result[6]),
@@ -145,11 +146,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--device', default='auto', choices=['auto', 'cpu', 'cuda'])
 
     parser.add_argument('--prepare-env', action='store_true', help='Create corpus from scratch (one-time)')
-    parser.add_argument(
-        '--download_articles_from_ruwiki', 
-        action='store_true', 
-        help='Only needed if you want to download all articles again!'
-    )
 
     parser.add_argument('--neighbor-count', type=int, default=0)
     parser.add_argument(
@@ -207,7 +203,7 @@ async def run(args):
     )
 
     if args.prepare_env:
-        bench.prepare_env(are_texts_ready = not args.download_articles_from_ruwiki)
+        bench.prepare_env()
     else:
         bench.load_enviroment()
 
@@ -230,7 +226,8 @@ async def run(args):
     }
 
     save_metrics_json(model_dir / 'metrics.json', metrics)
-
+    save_metrics_csv(model_dir / 'metrics.csv', metrics)
+    
     return metrics
 
 def main():
