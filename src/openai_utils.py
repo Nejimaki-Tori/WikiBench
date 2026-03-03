@@ -38,6 +38,9 @@ class LlmCompleter:
         self.extra_body={
             "repetition_penalty": self.rep_pen,
             "guided_choice": None,
+            "chat_template_kwargs": {
+                "enable_thinking": False
+            },
             "add_generation_prompt": True,
             "guided_regex": None
         }
