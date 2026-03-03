@@ -399,7 +399,8 @@ class WikiGen:
 
         for token_info in response.logprobs.content:
             for variant in token_info.top_logprobs:
-                key = variant.token.strip().upper()
+                # key = variant.token.strip().upper()
+                key = variant.token.replace("▁", "").replace("Ġ", "").strip().upper()
                 if key == positive_choice or key == negative_choice:
                     probs[key].append(math.exp(variant.logprob))
 
