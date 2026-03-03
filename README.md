@@ -115,6 +115,7 @@ bench = WikiBench(
     key='',
     url='',
     model_name='',
+    model_safe_name='',
     device=device,
     encoder=encoder
 )
