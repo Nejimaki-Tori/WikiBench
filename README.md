@@ -99,6 +99,8 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 ```python
 # ДАННЫЙ КОД НУЖЕН ДЛЯ ПОДГОТОВКИ ОКРУЖЕНИЯ В ПЕРВЫЙ РАЗ
+import nltk
+nltk.download('stopwords')
 
 import sys
 import torch
