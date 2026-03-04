@@ -205,7 +205,7 @@ runs/
 ---
 
 
-## Пример использования
+## Пример использования в Jupyter Notebook
 
 ```python
 import logging
