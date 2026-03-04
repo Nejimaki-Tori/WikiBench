@@ -128,7 +128,7 @@ class WikiBench:
             self.wiki_agent.utils = self.wiki_utility
             return
 
-        self.logger.info('Downloading dataset...')
+        # self.logger.info('Downloading dataset...')
 
         self.logger.info('Creating main corpus from scratch...')
         self.wiki_agent.utils.create_corpus_from_scratch(article_names=self.article_names, window_size=window_size, overlap=overlap)
