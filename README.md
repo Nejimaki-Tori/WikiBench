@@ -208,47 +208,35 @@ runs/
 ## Пример использования
 
 ```python
-import sys
 import logging
 import torch
-sys.path.append('src')
-from wiki_bench import WikiBench
 from sentence_transformers import SentenceTransformer
+from run_bench import run_wiki_benchmark
 
-# можно создать файл Access_key.txt и указать там url и key
-# with open('Access_key.txt', 'r', encoding='utf-8') as file:
-#    url, key = file.read().split()
+# нужно указать там url и key
+url = 'YOUR_URL'
+key = 'YOUR_KEY'
+model_name = 'YOUR_MODEL_NAME'
 
 logging.getLogger('sentence_transformers.SentenceTransformer').setLevel(logging.ERROR)
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 encoder = SentenceTransformer('sergeyzh/BERTA').to(device)
 
-bench = WikiBench(
-    key='KEY', # key=key
-    url='URL', # url=url
-    model_name='ruadapt-qwen3-4b', # example model name
-    device=device, # 'cuda'
-    encoder=encoder, # 'sergeyzh/BERTA' - default
-    number_of_articles=3 # число статей для подсчета
-)
-
-# подготовка окружения (корпус уже должен быть готов!)
-bench.load_enviroment()
-
-# Ранжирование источников
-score_query = await bench.rank_query()
-print("Score (query):", score_query)
-
-# Генерация плана
-score_outline = await bench.rank_outline(
+results = await run_wiki_benchmark(
+    model_name=model_name,
+    api=url,
+    key=key,
+    concurrency=40,
+    output_dir='wikibench_outputs',
+    number_of_articles=20,
+    encoder_name='sergeyzh/BERTA',
+    device='cuda',
+    prepare_env=False,
     neighbor_count=0,
-    description_mode=0,
-    clusterization_with_hint=True             
+    description_mode=True,
+    clusterization_with_hint=True,
+    shared_encoder=encoder,
+    shared_device=device
 )
-print("Score (outline):", score_outline)
-
-# Генерация секций
-score_sections = await bench.rank_sections()
-print("Score (sections):", score_sections)
 ```
